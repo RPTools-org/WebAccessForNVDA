@@ -107,6 +107,16 @@ class Menu(wx.Menu):
 			)
 		item.Check(not webAccess.webAccessEnabled)
 		self.Bind(wx.EVT_MENU, self.OnWebAccessToggle, item)
+
+		self.AppendSeparator()
+
+		if webModule is not None:
+			# Translators: Module help
+			item = self.Append(wx.ID_ANY, _("Module &help"))
+
+		# Translators: Web Access help
+		item = self.Append(wx.ID_ANY, _("&About Web Access"))
+
 		
 	def Show(self):
 		gui.mainFrame.prePopup(contextMenuName="Web Access")

@@ -258,9 +258,10 @@ class Dialog(wx.Dialog):
 						node = node.parent
 
 				actionsDict = self.markerManager.getActions()
-				self.autoActionList.Append("", "")
-				for action in actionsDict:
-						self.autoActionList.Append(actionsDict[action], action)
+				if len(self.autoActionList.GetItems()) == 0:
+						self.autoActionList.Append("", "")
+						for action in actionsDict:
+								self.autoActionList.Append(actionsDict[action], action)
 
 				if len(self.getQueriesNames()) == 0:
 						self.markerName.Set([""])

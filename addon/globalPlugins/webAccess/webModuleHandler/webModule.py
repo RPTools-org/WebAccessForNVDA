@@ -52,6 +52,7 @@ class WebModule(baseObject.ScriptableObject):
 	url = None
 	name = None
 	windowTitle = None
+	helpTxt = None
 	markerManager = None
 	treeInterceptor = None
 	widgetManager = None
@@ -95,6 +96,7 @@ class WebModule(baseObject.ScriptableObject):
 				"name": self.name,
 				"url": self.url,
 				"windowTitle": self.windowTitle,
+				"helpTxt": self.helpTxt
 				}
 		return data
 	
@@ -120,6 +122,8 @@ class WebModule(baseObject.ScriptableObject):
 					self.url.extend(url)
 			if "windowTitle" in item:
 				self.windowTitle = item["windowTitle"]
+			if "helpTxt" in item:
+				self.helpTxt = item["helpTxt"]
 			self.userDefined = True
 		del item
 		items = data["Rules"] if "Rules" in data \

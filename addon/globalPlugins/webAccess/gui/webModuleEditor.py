@@ -103,76 +103,55 @@ class Dialog(wx.Dialog):
 			style=wx.DEFAULT_DIALOG_STYLE|wx.MAXIMIZE_BOX|wx.RESIZE_BORDER,
 			)
 
-		vSizer = wx.BoxSizer(wx.VERTICAL)
+		mainPadding = 10
 
-		hSizer = wx.BoxSizer(wx.HORIZONTAL)
+		mainSizer = wx.BoxSizer(wx.VERTICAL)
+
+		mainGridSizer = wx.GridBagSizer(mainPadding, mainPadding)
+		inputSizer = wx.BoxSizer(wx.VERTICAL)
+
 		# Translators: The label of a field to enter the name of the web module
-		hSizer.Add(
-			wx.StaticText(self, label=_("Web module name:")),
-			flag=wx.ALL,
-			border=4
-			)
+		inputSizer.Add(wx.StaticText(self, label=_("Web module name")))
 		item = self.webModuleName = wx.TextCtrl(self)
-		hSizer.Add(
-			item,
-			proportion=1,
-			flag=wx.ALL,
-			border=4,
-			)
-		vSizer.Add(hSizer, flag=wx.EXPAND)
-		
-		hSizer = wx.BoxSizer(wx.HORIZONTAL)
+		inputSizer.Add(item, flag=wx.EXPAND)
+
+		inputSizer.AddSpacer(mainPadding)
 		# Translators: The label of a field to enter the webModule URL
-		hSizer.Add(
-			wx.StaticText(self, label=_("URL:")),
-			flag=wx.ALL,
-			border=4
-			)
+		inputSizer.Add(wx.StaticText(self, label=_("URL")))
 		item = self.webModuleUrl = wx.ComboBox(self, choices=[])
-		hSizer.Add(
-			item,
-			proportion=1,
-			flag=wx.ALL,
-			border=4,
-			)
-		vSizer.Add(hSizer, flag=wx.EXPAND)
+		inputSizer.Add(item, flag=wx.EXPAND)
 
-		hSizer = wx.BoxSizer(wx.HORIZONTAL)
+		inputSizer.AddSpacer(mainPadding)
 		# Translators: The label of a field to enter the window title
-		hSizer.Add(
-			wx.StaticText(self, label=_("Window title:")),
-			flag=wx.ALL,
-			border=4
-			)
+		inputSizer.Add(wx.StaticText(self, label=_("Window title")))
 		item = self.webModuleWindowTitle = wx.ComboBox(self, choices=[])
-		hSizer.Add(
-			item,
-			proportion=1,
-			flag=wx.ALL,
-			border=4,
-			)
-		vSizer.Add(hSizer, flag=wx.EXPAND)
+		inputSizer.Add(item, flag=wx.EXPAND)
 
-		vSizer.Add(
-			self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL),
-			flag=wx.EXPAND|wx.TOP|wx.DOWN,
-			border=4
-			)
-		
-		hSizer = wx.BoxSizer(wx.HORIZONTAL)
-		hSizer.Add(
-			vSizer,
-			proportion=1,
-			flag=wx.EXPAND|wx.ALL,
-			border=4
-			)
-		
+		# Help section
+		helpSizer = wx.BoxSizer(wx.VERTICAL)
+		# Translators: The label of a field to enter help about the module
+		helpSizer.Add(wx.StaticText(self, label=_("&Help")))
+		item = self.helpTxt = wx.TextCtrl(self, size=(500, 300), style=wx.TE_MULTILINE)
+		helpSizer.Add(item, proportion=1, flag=wx.EXPAND)
+
+		mainGridSizer.Add(inputSizer, pos=(0, 0), flag=wx.EXPAND)
+		mainGridSizer.Add(helpSizer, pos=(0, 1), flag=wx.EXPAND)
+
+		mainGridSizer.AddGrowableCol(0)
+		mainGridSizer.AddGrowableCol(1)
+
+		mainSizer.Add(mainGridSizer, flag=wx.ALL | wx.EXPAND, border=mainPadding)
+		mainSizer.Add(self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL), flag=wx.EXPAND | wx.ALL, border=5)
 		self.Bind(wx.EVT_BUTTON, self.OnOk, id=wx.ID_OK)
 		self.Bind(wx.EVT_BUTTON, self.OnCancel, id=wx.ID_CANCEL)
-		self.Sizer = hSizer
-	
+
+		mainSizer.Fit(self)
+		self.Sizer = mainSizer
+
+
 	def InitData(self, context):
 		self.context = context
+
 		if "data" not in context:
 			context["data"] = {}
 		if "WebModule" not in context["data"]:
@@ -196,6 +175,11 @@ class Dialog(wx.Dialog):
 		else:
 			name = ""
 		self.webModuleName.Value = name
+
+		if webModule is not None and webModule.helpTxt is not None:
+			self.helpTxt.Value = webModule.helpTxt
+		else:
+			self.helpTxt.Value = ""
 		
 		urls = []
 		selectedUrl = None
@@ -314,6 +298,7 @@ class Dialog(wx.Dialog):
 		data["name"] = name
 		data["url"] = url.split(", ")
 		data["windowTitle"] = windowTitle
+		data["helpTxt"] = self.helpTxt.Value
 		
 		assert self.IsModal()
 		self.EndModal(wx.ID_OK)
