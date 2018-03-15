@@ -28,7 +28,7 @@ __author__ = "Julien Cochuyt <j.cochuyt@accessolutions.fr>"
 import wx
 
 from . import wx_lib_mixins_listctrl as listmix
- 
+
 class ListCtrlAutoWidth(
 		wx.ListCtrl,
 		listmix.ListCtrlAutoWidthMixin):

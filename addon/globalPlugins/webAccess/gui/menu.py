@@ -24,12 +24,13 @@
 __version__ = "2016.12.23"
 
 __author__ = "Julien Cochuyt <j.cochuyt@accessolutions.fr>"
- 
+
 import wx
 
 import addonHandler
 addonHandler.initTranslation()
 import gui
+import ui
 
 from ... import webAccess
 from .. import ruleHandler
@@ -44,12 +45,12 @@ class Menu(wx.Menu):
 	
 	def __init__(self, context):
 		super(Menu, self).__init__()
-		
+
 		self.context = context
-		
+
 		if webAccess.webAccessEnabled:
 			webModule = context["webModule"] if "webModule" in context else None
-			
+
 			if webModule is not None:
 				hasMarkerManager = hasattr(webModule, "markerManager")
 				item = self.Append(
@@ -58,7 +59,7 @@ class Menu(wx.Menu):
 					_("&New rule..."))
 				self.Bind(wx.EVT_MENU, self.OnRuleCreate, item)
 				item.Enable(hasMarkerManager)
-	
+
 			if \
 					webModule is not None \
 					and hasattr(webModule, "markerManager"):
@@ -69,7 +70,7 @@ class Menu(wx.Menu):
 				#self.Bind(wx.EVT_MENU, self.OnRuleEdit, item)
 				## TODO: Implement direct access
 				#item.Enable(False)
-				
+
 				item = self.Append(
 					wx.ID_ANY,
 					# Translators: Web Access menu item label.
@@ -77,7 +78,7 @@ class Menu(wx.Menu):
 				self.Bind(wx.EVT_MENU, self.OnRulesManager, item)
 				item.Enable(hasMarkerManager)
 				self.AppendSeparator()
-			
+
 			if webModule is None:
 				item = self.Append(
 					wx.ID_ANY,
@@ -90,14 +91,14 @@ class Menu(wx.Menu):
 					# Translators: Web Access menu item label.
 					_("Edit &web module %s...") % webModule.name)
 				self.Bind(wx.EVT_MENU, self.OnWebModuleEdit, item)
-			
+
 			item = self.Append(
 				wx.ID_ANY,
 				# Translators: Web Access menu item label.
 				_("Manage web &modules...")
 				)
 			self.Bind(wx.EVT_MENU, self.OnWebModulesManager, item)
-	
+
 			self.AppendSeparator()
 
 		item = self.AppendCheckItem(
@@ -110,12 +111,15 @@ class Menu(wx.Menu):
 
 		self.AppendSeparator()
 
-		if webModule is not None:
+		if webModule is not None and webModule.helpTxt:
 			# Translators: Module help
+			self.webModuleHelp = webModule.helpTxt
 			item = self.Append(wx.ID_ANY, _("Module &help"))
+			self.Bind(wx.EVT_MENU, self.OnModuleHelp, item)
 
 		# Translators: Web Access help
 		item = self.Append(wx.ID_ANY, _("&About Web Access"))
+		self.Bind(wx.EVT_MENU, self.OnWebAccessHelp, item)
 
 		
 	def Show(self):
@@ -140,8 +144,16 @@ class Menu(wx.Menu):
 	
 	def OnWebModulesManager(self, evt):
 		webModuleHandler.showManager(self.context)
-	
+
+	def OnModuleHelp(self, evt):
+		import markdown
+		helpTxtHtml = markdown.markdown(self.webModuleHelp)
+		ui.browseableMessage(helpTxtHtml, title="Module help", isHtml=True)
+
+	def OnWebAccessHelp(self, evt):
+		pass
+
 	def OnWebAccessToggle(self, evt):
 		self.context["webAccess"].script_toggleWebAccessSupport(None)
-	
-	
+
+
