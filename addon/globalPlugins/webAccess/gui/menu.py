@@ -78,23 +78,27 @@ class Menu(wx.Menu):
 				self.Bind(wx.EVT_MENU, self.OnRulesManager, item)
 				item.Enable(hasMarkerManager)
 				self.AppendSeparator()
-
+			
 			if webModule is None:
 				item = self.Append(
 					wx.ID_ANY,
-					# Translators: Web Access menu item label.
+					# Translators: WebAccess menu item label.
 					_("&New web module..."))
 				self.Bind(wx.EVT_MENU, self.OnWebModuleCreate, item)
 			else:
+				# Translators: WebAccess menu item label.
+				item = self.Append(wx.ID_ANY, _("&Help on module %s...") % webModule.name)
+				self.Bind(wx.EVT_MENU, self.OnModuleHelp, item)
+				
 				item = self.Append(
 					wx.ID_ANY,
-					# Translators: Web Access menu item label.
+					# Translators: WebAccess menu item label.
 					_("Edit &web module %s...") % webModule.name)
 				self.Bind(wx.EVT_MENU, self.OnWebModuleEdit, item)
-
+			
 			item = self.Append(
 				wx.ID_ANY,
-				# Translators: Web Access menu item label.
+				# Translators: WebAccess menu item label.
 				_("Manage web &modules...")
 				)
 			self.Bind(wx.EVT_MENU, self.OnWebModulesManager, item)
@@ -103,27 +107,14 @@ class Menu(wx.Menu):
 
 		item = self.AppendCheckItem(
 			wx.ID_ANY,
-			# Translators: Web Access menu item label.
+			# Translators: WebAccess menu item label.
 			_("Temporarily &disable all web modules"),
 			)
 		item.Check(not webAccess.webAccessEnabled)
 		self.Bind(wx.EVT_MENU, self.OnWebAccessToggle, item)
-
-		self.AppendSeparator()
-
-		if webModule is not None and webModule.helpTxt:
-			# Translators: Module help
-			self.webModuleHelp = webModule.helpTxt
-			item = self.Append(wx.ID_ANY, _("Module &help"))
-			self.Bind(wx.EVT_MENU, self.OnModuleHelp, item)
-
-		# Translators: Web Access help
-		item = self.Append(wx.ID_ANY, _("&About Web Access"))
-		self.Bind(wx.EVT_MENU, self.OnWebAccessHelp, item)
-
 		
 	def Show(self):
-		gui.mainFrame.prePopup(contextMenuName="Web Access")
+		gui.mainFrame.prePopup(contextMenuName="WebAccess")
 		gui.mainFrame.PopupMenu(self)
 		gui.mainFrame.postPopup()
 		
@@ -142,16 +133,11 @@ class Menu(wx.Menu):
 	def OnWebModuleEdit(self, evt):
 		webModuleHandler.showEditor(self.context)
 	
+	def OnModuleHelp(self, evt):
+		webModuleHandler.showHelp(self.context)
+
 	def OnWebModulesManager(self, evt):
 		webModuleHandler.showManager(self.context)
-
-	def OnModuleHelp(self, evt):
-		import markdown
-		helpTxtHtml = markdown.markdown(self.webModuleHelp)
-		ui.browseableMessage(helpTxtHtml, title="Module help", isHtml=True)
-
-	def OnWebAccessHelp(self, evt):
-		pass
 
 	def OnWebAccessToggle(self, evt):
 		self.context["webAccess"].script_toggleWebAccessSupport(None)

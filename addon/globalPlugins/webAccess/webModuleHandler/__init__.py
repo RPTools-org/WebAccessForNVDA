@@ -126,7 +126,16 @@ def showEditor(context, new=False):
 			if new:
 				# Translator: Canceling web module creation.
 				ui.message(_("Cancel"))
-	
+
+def showHelp(context):
+	webModule = context.get("webModule")
+	if webModule is None:
+		return
+	from ..md2html import md2html
+	helpTxt = webModule.helpTxt
+	htmlHelp = md2html(helpTxt)
+	ui.browseableMessage(htmlHelp, title="Module help", isHtml=True)
+
 def showManager(context):
 	from ..gui import webModulesManager
 	webModulesManager.show(context)
