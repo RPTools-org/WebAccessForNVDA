@@ -1010,6 +1010,61 @@ class VirtualMarkerResult(MarkerResult):
 		return self.markerQuery.label + " - " + self.node.innerText
 
 
+class Criteria(object):
+	
+	@classmethod
+	def load(cls, rule, data):
+		new = Criteria(rule, data)
+	
+	def __init__(self, rule, **kwargs):
+		self.rule = rule
+		self.contextPageTitle = kwargs.pop("contextPageTitle", None)
+		self.contextPageType = kwargs.pop("contextPageType", None)
+		self.contextParent = kwargs.pop("contextParent", None)
+		self.text = kwargs.pop("text", None)
+		self.role = kwargs.pop("role", None)
+		self.tag = kwargs.pop("tag", None)
+		self.id = kwargs.pop("id", None)
+		self.className = kwargs.pop("className", None)
+		self.src = kwargs.pop("src", None)
+		self.relativePath = kwargs.pop("relativePath", None)
+		self.priority = kwargs.pop("priority", None)
+		self.sayName = kwargs.pop("sayName", None)
+		self.customName = kwargs.pop("customName", None)
+		self.customValue = kwargs.pop("customValue", None)
+		if kwargs:
+			raise ValueError(
+				u"Unexpected attribute"
+				+ (u"s" if len(kwargs) > 1 else u"")
+				+ u": "
+				+ u", ".join(kwargs.keys())
+			)
+	
+	def dump(self):
+		data = OrderedDict()
+		
+		def setIfNotNone(key, value):
+			if value is not None:
+				data[key] = value
+		
+		setIfNotNone("contextPageTitle", self.contextPageTitle)
+		setIfNotNone("contextPageType", self.contextPageType)
+		setIfNotNone("contextParent", self.contextParent)
+		setIfNotNone("text", self.text)
+		setIfNotNone("role", self.role)
+		setIfNotNone("tag", self.tag)
+		setIfNotNone("id", self.id)
+		setIfNotNone("className", self.className)
+		setIfNotNone("src", self.src)
+		setIfNotNone("relativePath", self.relativePath)
+		setIfNotNone("priority", self.priority)
+		setIfNotNone("sayName", self.sayName)
+		setIfNotNone("customName", self.customName)
+		setIfNotNone("customValue", self.customValue)
+		
+		return data
+
+
 class MarkerQuery(baseObject.ScriptableObject):
 	
 	def __init__(self, markerManager):
