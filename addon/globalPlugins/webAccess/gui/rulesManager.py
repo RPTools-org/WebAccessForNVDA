@@ -86,9 +86,10 @@ class Dialog(wx.Dialog):
 		contentsSizer.Add(filtersSizer)
 		contentsSizer.AddSpacer(gui.guiHelper.SPACE_BETWEEN_VERTICAL_DIALOG_ITEMS)
 
-		self.tree = wx.TreeCtrl(self, size=wx.Size(500, 600), style=wx.TR_HAS_BUTTONS | wx.TR_HIDE_ROOT | wx.TR_LINES_AT_ROOT)
-		self.treeRoot = self.tree.AddRoot("root")
-		contentsSizer.Add(self.tree,flag=wx.EXPAND)
+		self.ruleTree = wx.TreeCtrl(self, size=wx.Size(500, 600), style=wx.TR_HAS_BUTTONS | wx.TR_HIDE_ROOT | wx.TR_LINES_AT_ROOT | wx.TR_SINGLE | wx.TR_EDIT_LABELS)
+		self.ruleTree.Bind(wx.EVT_TREE_SEL_CHANGED, self.OnRuleListChoice)
+		self.ruleTreeRoot = self.ruleTree.AddRoot("root")
+		contentsSizer.Add(self.ruleTree,flag=wx.EXPAND)
 		contentsSizer.AddSpacer(gui.guiHelper.SPACE_BETWEEN_VERTICAL_DIALOG_ITEMS)
 
 		self.ruleList = wx.ListBox(self)
@@ -141,6 +142,22 @@ class Dialog(wx.Dialog):
 
 
 	def RefreshRuleList(self, selectName=None):
+		api.processPendingEvents()
+		self.queryList = []
+		for query in self.markerManager.getQueries():
+			self.queryList.append(
+				{
+					'rule': query,
+					'name': query.name,
+					'treeId': None
+				})
+		self.sortedList = sorted(self.queryList, key=lambda rule: rule.name)
+
+		for rule in self.sortedList:
+			item = self.ruleTree.AppendItem(self.ruleTreeRoot, rule.name)
+			if rule.name == selectName:
+				self.ruleTree.Selection = item
+
 		"""
 		Refresh the list of rules.
 		
@@ -148,7 +165,6 @@ class Dialog(wx.Dialog):
 		Otherwise, the rule matching the current focus in the document,
 		if any, gets selected.
 		"""
-		api.processPendingEvents()
 		if not selectName:
 			sel = self.ruleList.Selection
 			if sel >= 0:
@@ -326,11 +342,11 @@ class Dialog(wx.Dialog):
 		# # Otherwise, use the currently selected element.
 		# # #8753: wxPython 4 returns "invalid tree item" when the tree view is empty, so use initial element if appropriate.
 		# try:
-		# 	defaultElement = self._initialElement if newElementType else self.tree.GetItemData(self.tree.GetSelection())
+		# 	defaultElement = self._initialElement if newElementType else self.ruleTree.GetItemData(self.ruleTree.GetSelection())
 		# except:
 		# 	defaultElement = self._initialElement
 		# # Clear the tree.
-		# self.tree.DeleteChildren(self.treeRoot)
+		# self.ruleTree.DeleteChildren(self.treeRoot)
 
 		# # Populate the tree with elements matching the filter text.
 		# elementsToTreeItems = {}
@@ -346,13 +362,13 @@ class Dialog(wx.Dialog):
 		# 	parent = element.parent
 		# 	if parent:
 		# 		parent = elementsToTreeItems.get(parent)
-		# 	item = self.tree.AppendItem(parent or self.treeRoot, label)
-		# 	self.tree.SetItemData(item, element)
+		# 	item = self.ruleTree.AppendItem(parent or self.treeRoot, label)
+		# 	self.ruleTree.SetItemData(item, element)
 		# 	elementsToTreeItems[element] = item
 		# 	if element == defaultElement:
 		# 		defaultItem = item
 
-		# self.tree.ExpandAll()
+		# self.ruleTree.ExpandAll()
 
 		# if not matched:
 		# 	# No items, so disable the buttons.
@@ -361,7 +377,7 @@ class Dialog(wx.Dialog):
 		# 	return
 
 		# # If there's no default item, use the first item in the tree.
-		# self.tree.SelectItem(defaultItem or self.tree.GetFirstChild(self.treeRoot)[0])
+		# self.ruleTree.SelectItem(defaultItem or self.ruleTree.GetFirstChild(self.treeRoot)[0])
 		# # Enable the button(s).
 		# # If the activate button isn't the default button, it is disabled for this element type and shouldn't be enabled here.
 		# if self.AffirmativeId == self.activateButton.Id:
