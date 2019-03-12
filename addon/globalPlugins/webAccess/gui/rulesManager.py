@@ -45,7 +45,7 @@ def show(context):
 	gui.mainFrame.postPopup()
 
 
-class TreeQuery:
+class TreeRule:
 	def __init__(self, name, data, treeid):
 		self.name = name
 		self.data = data
@@ -89,24 +89,23 @@ class Dialog(wx.Dialog):
 		contentsSizer.Add(self.radioButtons, flag=wx.EXPAND)
 		contentsSizer.AddSpacer(gui.guiHelper.SPACE_BETWEEN_VERTICAL_DIALOG_ITEMS)
 
-		filtersSizer = wx.BoxSizer()
+		filtersSizer = wx.GridSizer(rows=1, cols=2)
 
 		filterText = _("Filt&er by:")
 		labelledCtrl = gui.guiHelper.LabeledControlHelper(self, filterText, wx.TextCtrl)
 		self.filterEdit = labelledCtrl.control
-		self.filterEdit.Bind(wx.EVT_TEXT, self.OnFilterEditTextChange)
+		self.filterEdit.Bind(wx.EVT_TEXT, self.RefreshRuleList)
 		filtersSizer.Add(labelledCtrl.sizer)
-		filtersSizer.AddSpacer(gui.guiHelper.SPACE_BETWEEN_VERTICAL_DIALOG_ITEMS)
 
 		self.displayActiveRules = wx.CheckBox(self, label=_("Display only &active rules"))
 		self.displayActiveRules.Value = False
-		self.displayActiveRules.Bind(wx.EVT_CHECKBOX, self.OnDisplayActiveRules)
-		filtersSizer.Add(self.displayActiveRules, flag=wx.EXPAND)
+		self.displayActiveRules.Bind(wx.EVT_CHECKBOX, self.RefreshRuleList)
+		filtersSizer.Add(self.displayActiveRules)
 
-		contentsSizer.Add(filtersSizer)
+		contentsSizer.Add(filtersSizer, flag=wx.EXPAND)
 		contentsSizer.AddSpacer(gui.guiHelper.SPACE_BETWEEN_VERTICAL_DIALOG_ITEMS)
 
-		self.ruleTree = wx.TreeCtrl(self, size=wx.Size(500, 600), style=wx.TR_HAS_BUTTONS | wx.TR_HIDE_ROOT | wx.TR_LINES_AT_ROOT)
+		self.ruleTree = wx.TreeCtrl(self, size=wx.Size(700, 600), style=wx.TR_HAS_BUTTONS | wx.TR_HIDE_ROOT | wx.TR_LINES_AT_ROOT)
 		self.ruleTree.Bind(wx.EVT_TREE_SEL_CHANGED, self.OnRuleListChoice)
 		self.ruleTreeRoot = self.ruleTree.AddRoot("root")
 		contentsSizer.Add(self.ruleTree,flag=wx.EXPAND)
@@ -153,10 +152,21 @@ class Dialog(wx.Dialog):
 		webModule = context["webModule"]
 		self.markerManager = webModule.markerManager
 		self.rule = context["rule"]
+		self.GetRules()
 		self.RefreshRuleList()
 
+	
+	def GetRules(self):
+		self.treeRuleList = []
+		for result in self.markerManager.getResults():
+			self.treeRuleList.append(TreeRule(self.GetRuleName(result, result.markerQuery.gestures), result, None))
 
-	def RefreshRuleList(self, selectName=None):
+		for query in self.markerManager.getQueries():
+			if query not in [x.markerQuery for x in self.markerManager.getResults()]:
+				self.treeRuleList.append(TreeRule(self.GetRuleName(query, query.gestures), query, None))
+
+
+	def RefreshRuleList(self, selectName = None):
 		api.processPendingEvents()
 		"""
 		Refresh the list of rules.
@@ -166,54 +176,44 @@ class Dialog(wx.Dialog):
 		if any, gets selected.
 		"""
 		currentGroupBy = self.GROUP_BY[self.radioButtons.GetSelection()][0]
-		self.treeRuleList = []
-		sortedTreeRuleList = []
+		filterText = self.filterEdit.GetValue()
 		self.ruleTree.DeleteChildren(self.ruleTreeRoot)
 
 		# NAME GROUP BY
 		if currentGroupBy == 'Name':
-			for result in self.markerManager.getResults():
-				self.treeRuleList.append(TreeQuery(self.GetRuleName(result, result.markerQuery.gestures), result, None))
-
-			if not self.displayActiveRules.Value:
-				for query in self.markerManager.getQueries():
-					if query not in [x.markerQuery for x in self.markerManager.getResults()]:
-						self.treeRuleList.append(TreeQuery(self.GetRuleName(query, query.gestures), query, None))
-				
-			sortedTreeRuleList = sorted(self.treeRuleList, key=lambda rule: rule.name)
+			sortedTreeRuleList = sorted(self.treeRuleList, key=lambda rule: rule.name.lower())
 
 			for rule in sortedTreeRuleList:
-				rule.treeid = self.ruleTree.AppendItem(self.ruleTreeRoot, rule.name)
-
-			if selectName:
-				self.ruleTree.SelectItem([x.treeid for x in self.treeRuleList if x.data.name == selectName][0])
-			elif self.rule:
-				self.ruleTree.SelectItem([x.treeid for x in self.treeRuleList if x.data.name == self.rule.name][0])
+				if not self.displayActiveRules.Value or isinstance(rule.data, ruleHandler.MarkerResult):
+					if not filterText or filterText in rule.name:
+						rule.treeid = self.ruleTree.AppendItem(self.ruleTreeRoot, rule.name)
 
 		# GESTURES GROUP BY
 		elif currentGroupBy == 'Gestures':
 			gesturesDic = {}
-			for result in self.markerManager.getResults():
-				for gesture in result.markerQuery.gestures:
-					if gesturesDic.get(gesture):
-						gesturesDic[gesture].append(result)
-					else:
-						gesturesDic[gesture] = [result]
-			
-			if not self.displayActiveRules.Value:
-				for query in self.markerManager.getQueries():
-						if query not in [x.markerQuery for x in self.markerManager.getResults()]:
-							for gesture in query.gestures:
-								if gesturesDic.get(gesture):
-									gesturesDic[gesture].append(query)
-								else:
-									gesturesDic[gesture] = [query]
+			for rule in self.treeRuleList:
+				if not self.displayActiveRules.Value or isinstance(rule.data, ruleHandler.MarkerResult):
+					if not filterText or filterText in rule.name:
+						gestures = []
+						if isinstance(rule.data, ruleHandler.MarkerResult):
+							gestures = rule.data.markerQuery.gestures
+						else:
+							gestures = rule.data.gestures
+						for gesture in gestures:
+							if gesturesDic.get(gesture):
+								gesturesDic[gesture].append(rule.data)
+							else:
+								gesturesDic[gesture] = [rule.data]
 
 			for gestureKey in gesturesDic.keys():
 				gestureTreeId = self.ruleTree.AppendItem(self.ruleTreeRoot, gestureKey)
 				for rule in gesturesDic[gestureKey]:
-					ruleId = self.ruleTree.AppendItem(gestureTreeId, rule.name)
-					self.treeRuleList.append(TreeQuery(rule.name, rule, ruleId))
+					rule.treeid = self.ruleTree.AppendItem(gestureTreeId, rule.name)
+
+		if selectName:
+			self.ruleTree.SelectItem([x.treeid for x in self.treeRuleList if x.data.name == selectName][0])
+		elif self.rule:
+			self.ruleTree.SelectItem([x.treeid for x in self.treeRuleList if x.data.name == self.rule.name][0])
 
 
 	def GetRuleName(self, rule, gestures):
@@ -240,6 +240,7 @@ class Dialog(wx.Dialog):
 	def OnNew(self, evt):
 		context = self.context.copy()  # Shallow copy
 		if ruleHandler.showCreator(context):
+			self.GetRules()
 			self.RefreshRuleList(context["data"]["rule"]["name"])
 			self.ruleTree.SetFocus()
 
@@ -262,6 +263,7 @@ class Dialog(wx.Dialog):
 			webModule=self.context["webModule"],
 			focus=self.context["focusObject"]
 			)
+		self.GetRules()
 		self.RefreshRuleList()
 		self.ruleTree.SetFocus()
 
@@ -293,67 +295,9 @@ class Dialog(wx.Dialog):
 		context["rule"] = query
 		if ruleHandler.showEditor(context):
 			# Pass the eventually changed rule name
+			self.GetRules()
 			self.RefreshRuleList(context["data"]["rule"]["name"])
 			self.ruleTree.SetFocus()
-
-
-	def OnDisplayActiveRules(self, evt):
-		self.RefreshRuleList()
-		self.ruleTree.SetFocus()
-
-
-	def OnFilterEditTextChange(self, evt):
-		self.Filter(self.filterEdit.GetValue())
-		evt.Skip()
-
-
-	def Filter(self, filterText):
-		print(filterText)
-		# # If this is a new element type, use the element nearest the cursor.
-		# # Otherwise, use the currently selected element.
-		# # #8753: wxPython 4 returns "invalid tree item" when the tree view is empty, so use initial element if appropriate.
-		# try:
-		# 	defaultElement = self._initialElement if newElementType else self.ruleTree.GetItemData(self.ruleTree.GetSelection())
-		# except:
-		# 	defaultElement = self._initialElement
-		# # Clear the tree.
-		# self.ruleTree.DeleteChildren(self.treeRoot)
-
-		# # Populate the tree with elements matching the Filter text.
-		# elementsToTreeItems = {}
-		# defaultItem = None
-		# matched = False
-		# #Do case-insensitive matching by lowering both filterText and each element's text.
-		# filterText=filterText.lower()
-		# for element in self._elements:
-		# 	label=element.item.label
-		# 	if filterText and filterText not in label.lower():
-		# 		continue
-		# 	matched = True
-		# 	parent = element.parent
-		# 	if parent:
-		# 		parent = elementsToTreeItems.get(parent)
-		# 	item = self.ruleTree.AppendItem(parent or self.treeRoot, label)
-		# 	self.ruleTree.SetItemData(item, element)
-		# 	elementsToTreeItems[element] = item
-		# 	if element == defaultElement:
-		# 		defaultItem = item
-
-		# self.ruleTree.ExpandAll()
-
-		# if not matched:
-		# 	# No items, so disable the buttons.
-		# 	self.activateButton.Disable()
-		# 	self.moveButton.Disable()
-		# 	return
-
-		# # If there's no default item, use the first item in the tree.
-		# self.ruleTree.SelectItem(defaultItem or self.ruleTree.GetFirstChild(self.treeRoot)[0])
-		# # Enable the button(s).
-		# # If the activate button isn't the default button, it is disabled for this element type and shouldn't be enabled here.
-		# if self.AffirmativeId == self.activateButton.Id:
-		# 	self.activateButton.Enable()
-		# self.moveButton.Enable()
 
 
 	def ShowModal(self, context):
