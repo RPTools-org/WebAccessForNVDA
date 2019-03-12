@@ -19,7 +19,7 @@
 #
 # See the file COPYING.txt at the root of this distribution for more details.
 
-__version__ = "2019.01.20"
+__version__ = "2019.03.08"
 __author__ = u"Frédéric Brugnot <f.brugnot@accessolutions.fr>"
 
 
@@ -300,7 +300,7 @@ class MarkerManager(baseObject.ScriptableObject):
 				results = query.getResults()
 				self.markerResults += results
 				self.markerResults.sort()
-			if self.zone:
+			if self.zone is not None:
 				if not self.zone.update():
 					self.zone = None
 			self.nodeManagerIdentifier = self.nodeManager.identifier
@@ -427,25 +427,27 @@ class MarkerManager(baseObject.ScriptableObject):
 					types.append(result.markerQuery.name)
 			return types
 
-	def getNextResult(self, ruleType=None, name=None):
-		return self._getIncrementalResult(ruleType=ruleType, name=None)
-	
-	def getPreviousResult(self, ruleType=None, name=None):
-		return self._getIncrementalResult(
-			previous=True,
-			ruleType=ruleType,
-			name=None
-		)
-	
 	def _getIncrementalResult(
 		self,
 		previous=False,
-		info=None,
+		relative=True,
+		caret=None,
 		types=None,
 		name=None,
 		respectZone=False,
 		honourSkip=True,
 	):
+		if honourSkip:
+			caret = caret.copy()
+			caret.expand(textInfos.UNIT_CHARACTER)
+			skippedZones = []
+			for result in self.markerResults:
+				query = result.markerQuery
+				if not query.skip or query.type != ruleTypes.ZONE:
+					continue
+				zone = Zone(result)
+				if not zone.containsTextInfo(caret):
+					skippedZones.append(zone)
 		for result in (
 			reversed(self.markerResults)
 			if previous else self.markerResults
@@ -456,17 +458,24 @@ class MarkerManager(baseObject.ScriptableObject):
 			if name:
 				if query.name != name:
 					continue
-			elif honourSkip and query.skip:
-				continue
+			elif honourSkip:
+				if query.skip:
+					continue
+				if any(
+					zone
+					for zone in skippedZones
+					if zone.containsResult(result)
+				):
+					continue
 			if (
 				hasattr(result, "node")
 				and (
-					info is None
+					not relative
 					or (
 						not previous
-						and info._startOffset < result.node.offset
+						and caret._startOffset < result.node.offset
 					)
-					or (previous and info._startOffset > result.node.offset)
+					or (previous and caret._startOffset > result.node.offset)
 				)
 				and (
 					not respectZone
@@ -495,7 +504,10 @@ class MarkerManager(baseObject.ScriptableObject):
 			return None
 		offset = info._startOffset
 		for r in reversed(self.markerResults):
-			if hasattr(r, "node") and offset >= r.node.offset:
+			if (
+				hasattr(r, "node")
+				and r.node.offset <= offset < r.node.offset + r.node.size 
+			):
 				return r
 		return None
 	
@@ -518,17 +530,18 @@ class MarkerManager(baseObject.ScriptableObject):
 		
 		# If not found after/before the current position, and cycle is True,
 		# return the first/last result.
-		for positioned in ((True, False) if cycle else (True,)):
+		for relative in ((True, False) if cycle else (True,)):
 			result = self._getIncrementalResult(
 				previous=previous,
-				info=info if positioned else None,
+				caret=info,
+				relative=relative,
 				types=types,
 				name=name,
 				respectZone=respectZone,
 				honourSkip=honourSkip
 			)
 			if result:
-				if not positioned:
+				if not relative:
 					playWebAppSound("loop")
 					sleep(0.2)
 				break
@@ -567,7 +580,7 @@ class MarkerManager(baseObject.ScriptableObject):
 		self.update()
 	
 	def script_quickNavToNextLevel1(self, gesture):
-		self.quickNav(types=(ruleTypes.ZONE,))
+		self.quickNav(types=(ruleTypes.ZONE,), honourSkip=False)
 	
 	# Translators: Input help mode message for quickNavToNextLevel1.
 	script_quickNavToNextLevel1.__doc__ = _("Move to next zone.")
@@ -575,7 +588,7 @@ class MarkerManager(baseObject.ScriptableObject):
 	script_quickNavToNextLevel1.category = SCRIPT_CATEGORY
 	
 	def script_quickNavToPreviousLevel1(self, gesture):
-		self.quickNav(previous=True, types=(ruleTypes.ZONE,))
+		self.quickNav(previous=True, types=(ruleTypes.ZONE,), honourSkip=False)
 	
 	# Translators: Input help mode message for quickNavToPreviousLevel1.
 	script_quickNavToPreviousLevel1.__doc__ = _("Move to previous zone.")
@@ -719,14 +732,20 @@ class VirtualMarkerResult(MarkerResult):
 		treeInterceptor.passThrough = query.formMode
 		browseMode.reportPassThrough.last = treeInterceptor.passThrough
 		if query.type == ruleTypes.ZONE:
-			query.markerManager.zone = Zone(query)
+			query.markerManager.zone = Zone(self)
 			# Ensure the focus does not remain on a control out of the zone
 			treeInterceptor.rootNVDAObject.setFocus()
-		elif (
-			query.markerManager.zone and
-			not query.markerManager.zone.containsNode(self.node)
-		):
-			query.markerManager.zone = None
+		else:
+			for result in reversed(query.markerManager.markerResults):
+				if result.markerQuery.type != ruleTypes.ZONE:
+					continue
+				zone = Zone(result)
+				if zone.containsResult(self):
+					if zone != query.markerManager.zone:
+						query.markerManager.zone = zone
+					break
+			else:
+				query.markerManager.zone = None
 		info = treeInterceptor.makeTextInfo(
 			textInfos.offsets.Offsets(self.node.offset, self.node.offset)
 		)
@@ -1096,17 +1115,50 @@ class VirtualMarkerQuery(MarkerQuery):
 
 class Zone(textInfos.offsets.Offsets):
 	
-	def __init__(self, rule):
+	def __init__(self, result):
+		rule = result.markerQuery
 		self.ruleManager = rule.markerManager
 		self.name = rule.name
-		self.update()
+		super(Zone, self).__init__(startOffset=None, endOffset=None)
+		self._update(result)
+	
+	def __bool__(self):  # Python 3
+		return self.startOffset is not None and self.endOffset is not None
+	
+	def __eq__(self, other):
+		return (
+			isinstance(other, Zone)
+			and other.ruleManager == self.ruleManager
+			and other.name == self.name
+			and other.startOffset == self.startOffset
+			and other.endOffset == self.endOffset
+		)
+	
+	def __nonzero__(self):  # Python 2
+		return self.__bool__()
 	
 	def __repr__(self):
+		if not self:
+			return u"<Zone {} (invalidated)>".format(repr(self.name))
 		return u"<Zone {} at ({}, {})>".format(
 			repr(self.name), self.startOffset, self.endOffset
 		)
 	
+	def containsNode(self, node):
+		if not self:
+			return False
+		return self.startOffset <= node.offset < self.endOffset
+	
+	def containsResult(self, result):
+		if not self:
+			return False
+		if hasattr(result, "node"):
+			return self.containsNode(result.node)
+		return False
+	
 	def containsTextInfo(self, info):
+		if not self:
+			return False
 		if not isinstance(info, textInfos.offsets.OffsetsTextInfo):
 			raise ValueError(u"Not supported {}".format(type(info)))
 		return (
@@ -1114,22 +1166,24 @@ class Zone(textInfos.offsets.Offsets):
 			and info._endOffset <= self.endOffset
 		)
 	
-	def containsNode(self, node):
-		return self.startOffset <= node.offset < self.endOffset
+	def getRule(self):
+		return self.ruleManager.getQueryByName(self.name)
 	
 	def isTextInfoAtStart(self, info):
 		if not isinstance(info, textInfos.offsets.OffsetsTextInfo):
 			raise ValueError(u"Not supported {}".format(type(info)))
-		return info._startOffset == self.startOffset
+		return self and info._startOffset == self.startOffset
 	
 	def isTextInfoAtEnd(self, info):
 		if not isinstance(info, textInfos.offsets.OffsetsTextInfo):
 			raise ValueError(u"Not supported {}".format(type(info)))
-		return info._endOffset == self.endOffset
+		return self and info._endOffset == self.endOffset
 	
 	def restrictTextInfo(self, info):
 		if not isinstance(info, textInfos.offsets.OffsetsTextInfo):
 			raise ValueError(u"Not supported {}".format(type(info)))
+		if not self:
+			return False
 		res = False
 		if info._startOffset < self.startOffset:
 			res = True
@@ -1146,15 +1200,21 @@ class Zone(textInfos.offsets.Offsets):
 		return res
 	
 	def update(self):
-		rule = self.ruleManager.getQueryByName(self.name)
+		rule = self.getRule()
 		if not rule:
 			# The WebModule might have been edited and the rule deleted.
+			self.startOffset = self.endOffset = None
 			return False
 		results = rule.getResults()
 		if not results:
+			self.startOffset = self.endOffset = None
 			return False
-		node = results[0].node
+		return self._update(results[0])
+	
+	def _update(self, result):
+		node = result.node
 		if not node:
+			self.startOffset = self.endOffset = None
 			return False
 		self.startOffset = node.offset
 		self.endOffset = node.offset + node.size
