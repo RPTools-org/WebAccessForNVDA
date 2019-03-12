@@ -47,7 +47,8 @@ def show(context):
 
 
 class TreeRule:
-	def __init__(self, name, data, treeid):
+	def __init__(self, displayName, name, data, treeid):
+		self.displayName = displayName
 		self.name = name
 		self.data = data
 		self.treeid = treeid
@@ -72,15 +73,15 @@ class Dialog(wx.Dialog):
 		mainSizer = wx.BoxSizer(wx.VERTICAL)
 		contentsSizer = wx.BoxSizer(wx.VERTICAL)
 
-		self.radioButtons = wx.RadioBox(self, wx.ID_ANY, label=_("Group by: "), choices=tuple(et[1] for et in self.GROUP_BY))
+		self.radioButtons = wx.RadioBox(self, label=_("&Group by: "), choices=tuple(et[1] for et in self.GROUP_BY))
 		self.radioButtons.SetSelection(0)
-		self.radioButtons.Bind(wx.EVT_RADIOBOX, self.RefreshRuleList)
+		self.radioButtons.Bind(wx.EVT_RADIOBOX, self.OnRadioButtonChange)
 		contentsSizer.Add(self.radioButtons, flag=wx.EXPAND)
 		contentsSizer.AddSpacer(gui.guiHelper.SPACE_BETWEEN_VERTICAL_DIALOG_ITEMS)
 
 		filtersSizer = wx.GridSizer(1, 2, 10, 10)
 
-		filterText = _("Filt&er by:")
+		filterText = _("&Filter by:")
 		labelledCtrl = gui.guiHelper.LabeledControlHelper(self, filterText, wx.TextCtrl)
 		self.filterEdit = labelledCtrl.control
 		self.filterEdit.Bind(wx.EVT_TEXT, self.RefreshRuleList)
@@ -100,7 +101,7 @@ class Dialog(wx.Dialog):
 		contentsSizer.Add(self.ruleTree,flag=wx.EXPAND)
 		contentsSizer.AddSpacer(gui.guiHelper.SPACE_BETWEEN_VERTICAL_DIALOG_ITEMS)
 
-		ruleCommentLabel = wx.StaticText(self, label="Description")
+		ruleCommentLabel = wx.StaticText(self, label=_("Description"))
 		contentsSizer.Add(ruleCommentLabel, flag=wx.EXPAND)
 		self.ruleComment = wx.TextCtrl(self, style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_NO_VSCROLL)
 		contentsSizer.Add(self.ruleComment, flag=wx.EXPAND)
@@ -128,40 +129,33 @@ class Dialog(wx.Dialog):
 		mainSizer.Add(self.CreateSeparatedButtonSizer(wx.CLOSE), flag=wx.EXPAND)
 		mainSizer.Fit(self)
 		self.Sizer = mainSizer
-
 		self.CentreOnScreen()
 
-	def __del__(self):
-		Dialog._instance = None
 
 	def InitData(self, context):
 		self.context = context
-		webModule = context["webModule"]
-		self.markerManager = webModule.markerManager
+		self.markerManager = context["webModule"].markerManager
 		self.rule = context["rule"]
-		self.GetRules()
 		self.RefreshRuleList()
 	
+
+	# Get results first, then queries that or not already in results
 	def GetRules(self):
 		self.treeRuleList = []
 		for result in self.markerManager.getResults():
-			self.treeRuleList.append(TreeRule(self.GetRuleName(result, result.markerQuery.gestures), result, None))
+			if result not in [x.data for x in self.treeRuleList]:
+				self.treeRuleList.append(TreeRule(result.getDisplayString(), self.GetRuleName(result, result.markerQuery.gestures), result, None))
 
 		for query in self.markerManager.getQueries():
 			if query not in [x.markerQuery for x in self.markerManager.getResults()]:
-				self.treeRuleList.append(TreeRule(self.GetRuleName(query, query.gestures), query, None))
+				self.treeRuleList.append(TreeRule(query.getDisplayString(), self.GetRuleName(query, query.gestures), query, None))
+
 
 	def RefreshRuleList(self, selectName = None):
 		api.processPendingEvents()
-		"""
-		Refresh the list of rules.
-		
-		If *selectName" is set, the rule with that name gets selected.
-		Otherwise, the rule matching the current focus in the document (self.rule),
-		if any, gets selected.
-		"""
 		currentGroupBy = self.GROUP_BY[self.radioButtons.GetSelection()][0]
 		filterText = self.filterEdit.GetValue()
+		self.GetRules()
 		self.ruleTree.DeleteChildren(self.ruleTreeRoot)
 
 		# NAME GROUP BY
@@ -171,7 +165,7 @@ class Dialog(wx.Dialog):
 			for rule in sortedTreeRuleList:
 				if not self.displayActiveRules.Value or isinstance(rule.data, ruleHandler.MarkerResult):
 					if not filterText or filterText in rule.name:
-						rule.treeid = self.ruleTree.AppendItem(self.ruleTreeRoot, rule.name)
+						rule.treeid = self.ruleTree.AppendItem(self.ruleTreeRoot, rule.displayName)
 
 		# GESTURES GROUP BY
 		elif currentGroupBy == 'Gestures':
@@ -188,14 +182,14 @@ class Dialog(wx.Dialog):
 						if len(gestures):
 							for gesture in gestures:
 								if gesturesDic.get(gesture):
-									gesturesDic[gesture].append(rule.data)
+									gesturesDic[gesture].append(rule)
 								else:
-									gesturesDic[gesture] = [rule.data]
+									gesturesDic[gesture] = [rule]
 						else:
-							noGesturesList.append(rule.data)
+							noGesturesList.append(rule)
 
 			for gestureKey in gesturesDic.keys():
-				gestureTreeId = self.ruleTree.AppendItem(self.ruleTreeRoot, gestureKey)
+				gestureTreeId = self.ruleTree.AppendItem(self.ruleTreeRoot, inputCore.getDisplayTextForGestureIdentifier(gestureKey)[1])
 				for rule in gesturesDic[gestureKey]:
 					rule.treeid = self.ruleTree.AppendItem(gestureTreeId, rule.name)
 
@@ -203,11 +197,9 @@ class Dialog(wx.Dialog):
 			for rule in noGesturesList:
 				rule.treeid = self.ruleTree.AppendItem(noGestureTreeId, rule.name)
 
-		if selectName and isinstance(selectName, str):
-			print("SELECT", selectName)
+		if selectName:
 			self.ruleTree.SelectItem([x.treeid for x in self.treeRuleList if x.data.name == selectName][0])
 		elif self.rule:
-			print("RULE", self.rule.name, [x.treeid for x in self.treeRuleList if x.data.name == self.rule.name], [x.name for x in self.treeRuleList if x.data.name == self.rule.name])
 			self.ruleTree.SelectItem([x.treeid for x in self.treeRuleList if x.data.name == self.rule.name][0])
 
 	def GetRuleName(self, rule, gestures):
@@ -232,7 +224,6 @@ class Dialog(wx.Dialog):
 	def OnNew(self, evt):
 		context = self.context.copy()  # Shallow copy
 		if ruleHandler.showCreator(context):
-			self.GetRules()
 			self.RefreshRuleList(context["data"]["rule"]["name"])
 			self.ruleTree.SetFocus()
 
@@ -254,7 +245,6 @@ class Dialog(wx.Dialog):
 			webModule=self.context["webModule"],
 			focus=self.context["focusObject"]
 			)
-		self.GetRules()
 		self.RefreshRuleList()
 		self.ruleTree.SetFocus()
 
@@ -292,10 +282,11 @@ class Dialog(wx.Dialog):
 		context["rule"] = query
 		if ruleHandler.showEditor(context):
 			# Pass the eventually changed rule name
-			self.GetRules()
 			self.RefreshRuleList(context["data"]["rule"]["name"])
 			self.ruleTree.SetFocus()
 
+	def OnRadioButtonChange(self, evt):
+		self.RefreshRuleList()
 
 	def ShowModal(self, context):
 		self.InitData(context)
