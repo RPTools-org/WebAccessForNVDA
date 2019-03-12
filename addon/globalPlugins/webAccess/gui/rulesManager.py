@@ -227,13 +227,13 @@ class Dialog(wx.Dialog):
 	def OnRuleListChoice(self, evt):
 		if evt.EventObject is None or evt.EventObject.IsBeingDeleted():
 			return
-		sel = self.ruleTree.Selection
-		if sel < 0:
+		matchingRules = [x.data for x in self.treeRuleList if x.treeid == self.ruleTree.Selection]
+		if not len(matchingRules):
 			self.movetoButton.Enabled = False
 			self.deleteButton.Enabled = False
 			self.editButton.Enabled = False
 			return
-		rule = [x.data for x in self.treeRuleList if x.treeid == sel][0]
+		rule = matchingRules[0]
 		if rule.getResults():
 			self.movetoButton.Enabled = True
 		else:
