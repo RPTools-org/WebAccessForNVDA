@@ -89,7 +89,7 @@ class Dialog(wx.Dialog):
 		contentsSizer.Add(self.radioButtons, flag=wx.EXPAND)
 		contentsSizer.AddSpacer(gui.guiHelper.SPACE_BETWEEN_VERTICAL_DIALOG_ITEMS)
 
-		filtersSizer = wx.GridSizer(rows=1, cols=2)
+		filtersSizer = wx.GridSizer(1, 2, 10, 10)
 
 		filterText = _("Filt&er by:")
 		labelledCtrl = gui.guiHelper.LabeledControlHelper(self, filterText, wx.TextCtrl)
