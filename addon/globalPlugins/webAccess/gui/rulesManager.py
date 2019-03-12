@@ -58,7 +58,8 @@ class TreeQuery:
 
 class Dialog(wx.Dialog):
 
-	ELEMENT_TYPES = (
+	_instance = None
+	GROUP_BY = (
 		("Name", _("Name")),
 		("Gestures", _("Gestures")),
 		("Contexts", _("Contexts")),
@@ -72,10 +73,10 @@ class Dialog(wx.Dialog):
 		mainSizer = wx.BoxSizer(wx.VERTICAL)
 		contentsSizer = wx.BoxSizer(wx.VERTICAL)
 
-		radioButtons = wx.RadioBox(self, wx.ID_ANY, label=_("Group by: "), choices=tuple(et[1] for et in self.ELEMENT_TYPES))
-		radioButtons.SetSelection(0)
-		radioButtons.Bind(wx.EVT_RADIOBOX, self.onElementTypeChange)
-		contentsSizer.Add(radioButtons, flag=wx.EXPAND)
+		self.radioButtons = wx.RadioBox(self, wx.ID_ANY, label=_("Group by: "), choices=tuple(et[1] for et in self.GROUP_BY))
+		self.radioButtons.SetSelection(0)
+		self.radioButtons.Bind(wx.EVT_RADIOBOX, self.RefreshRuleList)
+		contentsSizer.Add(self.radioButtons, flag=wx.EXPAND)
 		contentsSizer.AddSpacer(gui.guiHelper.SPACE_BETWEEN_VERTICAL_DIALOG_ITEMS)
 
 		filtersSizer = wx.BoxSizer()
@@ -83,7 +84,7 @@ class Dialog(wx.Dialog):
 		filterText = _("Filt&er by:")
 		labelledCtrl = gui.guiHelper.LabeledControlHelper(self, filterText, wx.TextCtrl)
 		self.filterEdit = labelledCtrl.control
-		self.filterEdit.Bind(wx.EVT_TEXT, self.onFilterEditTextChange)
+		self.filterEdit.Bind(wx.EVT_TEXT, self.OnFilterEditTextChange)
 		filtersSizer.Add(labelledCtrl.sizer)
 		filtersSizer.AddSpacer(gui.guiHelper.SPACE_BETWEEN_VERTICAL_DIALOG_ITEMS)
 
@@ -145,7 +146,7 @@ class Dialog(wx.Dialog):
 		self.RefreshRuleList()
 
 
-	def RefreshRuleList(self, selectName=None, elType=ELEMENT_TYPES[0]):
+	def RefreshRuleList(self, selectName=None):
 		api.processPendingEvents()
 		"""
 		Refresh the list of rules.
@@ -154,12 +155,13 @@ class Dialog(wx.Dialog):
 		Otherwise, the rule matching the current focus in the document (self.rule),
 		if any, gets selected.
 		"""
+		currentGroupBy = self.GROUP_BY[self.radioButtons.GetSelection()][0]
 		self.treeRuleList = []
 		sortedTreeRuleList = []
 		self.ruleTree.DeleteChildren(self.ruleTreeRoot)
 
-		# TRI PAR NOM
-		if elType[0] == 'Name':
+		# NAME GROUP BY
+		if currentGroupBy == 'Name':
 			for result in self.markerManager.getResults():
 				self.treeRuleList.append(TreeQuery(self.GetRuleName(result, result.markerQuery.gestures), result, None))
 
@@ -178,7 +180,8 @@ class Dialog(wx.Dialog):
 			elif self.rule:
 				self.ruleTree.SelectItem([x.treeid for x in self.treeRuleList if x.data.name == self.rule.name][0])
 
-		elif elType[0] == 'Gestures':
+		# GESTURES GROUP BY
+		elif currentGroupBy == 'Gestures':
 			gesturesDic = {}
 			for result in self.markerManager.getResults():
 				for gesture in result.markerQuery.gestures:
@@ -204,18 +207,14 @@ class Dialog(wx.Dialog):
 
 
 	def GetRuleName(self, rule, gestures):
-		ruleName = rule.name
+		ruleName = [rule.name]
 		gesturesKeys = gestures.keys()
 
 		if len(gesturesKeys):
-			if len(gesturesKeys) >= 1:
-				ruleName += " - "
-				ruleName += gestures[gesturesKeys[0]]
-			else:
-				for gestureKey in gesturesKeys:
-					ruleName += " - "
-					ruleName += gestures[gestureKey]
-		return ruleName
+			for gestureKey in gesturesKeys:
+				ruleName.append(" - ")
+				ruleName.append(gestures[gestureKey])
+		return ''.join(ruleName)
 
 
 	def OnMoveto(self, evt):
@@ -293,21 +292,13 @@ class Dialog(wx.Dialog):
 		self.ruleTree.SetFocus()
 
 
-	def onElementTypeChange(self, evt):
-		self.RefreshRuleList(elType=self.ELEMENT_TYPES[evt.GetInt()])
-		# We need to make sure this gets executed after the focus event.
-		# Otherwise, NVDA doesn't seem to get the event.
-		# queueHandler.queueFunction(queueHandler.eventQueue, self.initElementType, self.ELEMENT_TYPES[elementType][0])
-		# self.lastSelectedElementType=elementType
-
-
-	def onFilterEditTextChange(self, evt):
-		self.filter(self.filterEdit.GetValue())
+	def OnFilterEditTextChange(self, evt):
+		self.Filter(self.filterEdit.GetValue())
 		evt.Skip()
 
 
-	def filter(self, filterText, newElementType=False):
-		print("filter")
+	def Filter(self, filterText):
+		print(filterText)
 		# # If this is a new element type, use the element nearest the cursor.
 		# # Otherwise, use the currently selected element.
 		# # #8753: wxPython 4 returns "invalid tree item" when the tree view is empty, so use initial element if appropriate.
@@ -318,7 +309,7 @@ class Dialog(wx.Dialog):
 		# # Clear the tree.
 		# self.ruleTree.DeleteChildren(self.treeRoot)
 
-		# # Populate the tree with elements matching the filter text.
+		# # Populate the tree with elements matching the Filter text.
 		# elementsToTreeItems = {}
 		# defaultItem = None
 		# matched = False
