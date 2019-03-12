@@ -47,9 +47,8 @@ def show(context):
 
 
 class TreeRule:
-	def __init__(self, displayName, name, data, treeid):
+	def __init__(self, displayName, data, treeid):
 		self.displayName = displayName
-		self.name = name
 		self.data = data
 		self.treeid = treeid
 	
@@ -139,16 +138,10 @@ class Dialog(wx.Dialog):
 		self.RefreshRuleList()
 	
 
-	# Get results first, then queries that or not already in results
 	def GetRules(self):
 		self.treeRuleList = []
-		for result in self.markerManager.getResults():
-			if result not in [x.data for x in self.treeRuleList]:
-				self.treeRuleList.append(TreeRule(result.getDisplayString(), self.GetRuleName(result, result.markerQuery.gestures), result, None))
-
 		for query in self.markerManager.getQueries():
-			if query not in [x.markerQuery for x in self.markerManager.getResults()]:
-				self.treeRuleList.append(TreeRule(query.getDisplayString(), self.GetRuleName(query, query.gestures), query, None))
+			self.treeRuleList.append(TreeRule(query.getDisplayString(), query, None))
 
 
 	def RefreshRuleList(self, selectName = None):
@@ -160,11 +153,10 @@ class Dialog(wx.Dialog):
 
 		# NAME GROUP BY
 		if currentGroupBy == 'Name':
-			sortedTreeRuleList = sorted(self.treeRuleList, key=lambda rule: rule.name.lower())
-
+			sortedTreeRuleList = sorted(self.treeRuleList, key=lambda rule: rule.displayName.lower())
 			for rule in sortedTreeRuleList:
-				if not self.displayActiveRules.Value or isinstance(rule.data, ruleHandler.MarkerResult):
-					if not filterText or filterText in rule.name:
+				if not self.displayActiveRules.Value or rule.data.getResults():
+					if not filterText or filterText in rule.displayName:
 						rule.treeid = self.ruleTree.AppendItem(self.ruleTreeRoot, rule.displayName)
 
 		# GESTURES GROUP BY
@@ -172,15 +164,10 @@ class Dialog(wx.Dialog):
 			gesturesDic = {}
 			noGesturesList = []
 			for rule in self.treeRuleList:
-				if not self.displayActiveRules.Value or isinstance(rule.data, ruleHandler.MarkerResult):
-					if not filterText or filterText in rule.name:
-						gestures = []
-						if isinstance(rule.data, ruleHandler.MarkerResult):
-							gestures = rule.data.markerQuery.gestures
-						else:
-							gestures = rule.data.gestures
-						if len(gestures):
-							for gesture in gestures:
+				if not self.displayActiveRules.Value or rule.data.getResults():
+					if not filterText or filterText in rule.data.name:
+						if len(rule.data.gestures):
+							for gesture in rule.data.gestures:
 								if gesturesDic.get(gesture):
 									gesturesDic[gesture].append(rule)
 								else:
@@ -191,34 +178,27 @@ class Dialog(wx.Dialog):
 			for gestureKey in gesturesDic.keys():
 				gestureTreeId = self.ruleTree.AppendItem(self.ruleTreeRoot, inputCore.getDisplayTextForGestureIdentifier(gestureKey)[1])
 				for rule in gesturesDic[gestureKey]:
-					rule.treeid = self.ruleTree.AppendItem(gestureTreeId, rule.name)
+					displayName = [rule.data.name, " - ", rule.data.gestures[gestureKey]]
+					rule.treeid = self.ruleTree.AppendItem(gestureTreeId, ''.join(displayName))
 
 			noGestureTreeId = self.ruleTree.AppendItem(self.ruleTreeRoot, 'none')
 			for rule in noGesturesList:
-				rule.treeid = self.ruleTree.AppendItem(noGestureTreeId, rule.name)
+				rule.treeid = self.ruleTree.AppendItem(noGestureTreeId, rule.data.name)
 
+		self.ruleTree.ExpandAllChildren(self.ruleTreeRoot)
 		if selectName:
 			self.ruleTree.SelectItem([x.treeid for x in self.treeRuleList if x.data.name == selectName][0])
 		elif self.rule:
 			self.ruleTree.SelectItem([x.treeid for x in self.treeRuleList if x.data.name == self.rule.name][0])
 
-	def GetRuleName(self, rule, gestures):
-		ruleName = [rule.name]
-		gesturesKeys = gestures.keys()
-
-		if len(gesturesKeys):
-			for gestureKey in gesturesKeys:
-				ruleName.append(" - ")
-				ruleName.append(gestures[gestureKey])
-		return ''.join(ruleName)
 
 	def OnMoveto(self, evt):
 		sel = self.ruleTree.Selection
-		result = [x.data for x in self.treeRuleList if x.treeid == sel][0]
-		if not isinstance(result, ruleHandler.MarkerResult):
+		rule = [x.data for x in self.treeRuleList if x.treeid == sel][0]
+		if not rule.getResults():
 			wx.Bell()
 			return
-		result.script_moveto(None)
+		rule.script_moveto(None)
 		self.Close()
 
 	def OnNew(self, evt):
@@ -235,12 +215,8 @@ class Dialog(wx.Dialog):
 		) == wx.NO:
 			return
 		sel = self.ruleTree.Selection
-		result = [x.data for x in self.treeRuleList if x.treeid == sel][0]
-		if isinstance(result, ruleHandler.MarkerQuery):
-			query = result
-		else:
-			query = result.markerQuery
-		self.markerManager.removeQuery(query)
+		rule = [x.data for x in self.treeRuleList if x.treeid == sel][0]
+		self.markerManager.removeQuery(rule)
 		webModuleHandler.update(
 			webModule=self.context["webModule"],
 			focus=self.context["focusObject"]
@@ -257,29 +233,24 @@ class Dialog(wx.Dialog):
 			self.deleteButton.Enabled = False
 			self.editButton.Enabled = False
 			return
-		result = [x.data for x in self.treeRuleList if x.treeid == sel][0]
-		comment = ''
-		if isinstance(result, ruleHandler.MarkerResult):
+		rule = [x.data for x in self.treeRuleList if x.treeid == sel][0]
+		if rule.getResults():
 			self.movetoButton.Enabled = True
-			if result.markerQuery.comment:
-				comment = result.markerQuery.comment
 		else:
 			self.movetoButton.Enabled = False
-			if result.comment:
-				comment = result.comment
-		self.ruleComment.SetValue(comment)
+		
+		if rule.comment:
+			self.ruleComment.SetValue(rule.comment)
+		else:
+			self.ruleComment.SetValue('')
 		self.deleteButton.Enabled = True
 		self.editButton.Enabled = True
 
 	def OnEdit(self, evt):
 		sel = self.ruleTree.Selection
-		result = [x.data for x in self.treeRuleList if x.treeid == sel][0]
-		if isinstance(result, ruleHandler.MarkerQuery):
-			query = result
-		else:
-			query = result.markerQuery
+		rule = [x.data for x in self.treeRuleList if x.treeid == sel][0]
 		context = self.context.copy()  # Shallow copy
-		context["rule"] = query
+		context["rule"] = rule
 		if ruleHandler.showEditor(context):
 			# Pass the eventually changed rule name
 			self.RefreshRuleList(context["data"]["rule"]["name"])
