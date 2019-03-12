@@ -131,10 +131,8 @@ class Dialog(wx.Dialog):
 
 		self.CentreOnScreen()
 
-
 	def __del__(self):
 		Dialog._instance = None
-
 
 	def InitData(self, context):
 		self.context = context
@@ -143,7 +141,6 @@ class Dialog(wx.Dialog):
 		self.rule = context["rule"]
 		self.GetRules()
 		self.RefreshRuleList()
-
 	
 	def GetRules(self):
 		self.treeRuleList = []
@@ -153,7 +150,6 @@ class Dialog(wx.Dialog):
 		for query in self.markerManager.getQueries():
 			if query not in [x.markerQuery for x in self.markerManager.getResults()]:
 				self.treeRuleList.append(TreeRule(self.GetRuleName(query, query.gestures), query, None))
-
 
 	def RefreshRuleList(self, selectName = None):
 		api.processPendingEvents()
@@ -180,6 +176,7 @@ class Dialog(wx.Dialog):
 		# GESTURES GROUP BY
 		elif currentGroupBy == 'Gestures':
 			gesturesDic = {}
+			noGesturesList = []
 			for rule in self.treeRuleList:
 				if not self.displayActiveRules.Value or isinstance(rule.data, ruleHandler.MarkerResult):
 					if not filterText or filterText in rule.name:
@@ -188,22 +185,30 @@ class Dialog(wx.Dialog):
 							gestures = rule.data.markerQuery.gestures
 						else:
 							gestures = rule.data.gestures
-						for gesture in gestures:
-							if gesturesDic.get(gesture):
-								gesturesDic[gesture].append(rule.data)
-							else:
-								gesturesDic[gesture] = [rule.data]
+						if len(gestures):
+							for gesture in gestures:
+								if gesturesDic.get(gesture):
+									gesturesDic[gesture].append(rule.data)
+								else:
+									gesturesDic[gesture] = [rule.data]
+						else:
+							noGesturesList.append(rule.data)
 
 			for gestureKey in gesturesDic.keys():
 				gestureTreeId = self.ruleTree.AppendItem(self.ruleTreeRoot, gestureKey)
 				for rule in gesturesDic[gestureKey]:
 					rule.treeid = self.ruleTree.AppendItem(gestureTreeId, rule.name)
 
-		if selectName:
+			noGestureTreeId = self.ruleTree.AppendItem(self.ruleTreeRoot, 'none')
+			for rule in noGesturesList:
+				rule.treeid = self.ruleTree.AppendItem(noGestureTreeId, rule.name)
+
+		if selectName and isinstance(selectName, str):
+			print("SELECT", selectName)
 			self.ruleTree.SelectItem([x.treeid for x in self.treeRuleList if x.data.name == selectName][0])
 		elif self.rule:
+			print("RULE", self.rule.name, [x.treeid for x in self.treeRuleList if x.data.name == self.rule.name], [x.name for x in self.treeRuleList if x.data.name == self.rule.name])
 			self.ruleTree.SelectItem([x.treeid for x in self.treeRuleList if x.data.name == self.rule.name][0])
-
 
 	def GetRuleName(self, rule, gestures):
 		ruleName = [rule.name]
@@ -215,7 +220,6 @@ class Dialog(wx.Dialog):
 				ruleName.append(gestures[gestureKey])
 		return ''.join(ruleName)
 
-
 	def OnMoveto(self, evt):
 		sel = self.ruleTree.Selection
 		result = [x.data for x in self.treeRuleList if x.treeid == sel][0]
@@ -225,14 +229,12 @@ class Dialog(wx.Dialog):
 		result.script_moveto(None)
 		self.Close()
 
-
 	def OnNew(self, evt):
 		context = self.context.copy()  # Shallow copy
 		if ruleHandler.showCreator(context):
 			self.GetRules()
 			self.RefreshRuleList(context["data"]["rule"]["name"])
 			self.ruleTree.SetFocus()
-
 
 	def OnDelete(self, evt):
 		if gui.messageBox(
@@ -256,7 +258,6 @@ class Dialog(wx.Dialog):
 		self.RefreshRuleList()
 		self.ruleTree.SetFocus()
 
-
 	def OnRuleListChoice(self, evt):
 		sel = self.ruleTree.Selection
 		if sel < 0:
@@ -265,13 +266,18 @@ class Dialog(wx.Dialog):
 			self.editButton.Enabled = False
 			return
 		result = [x.data for x in self.treeRuleList if x.treeid == sel][0]
+		comment = ''
 		if isinstance(result, ruleHandler.MarkerResult):
 			self.movetoButton.Enabled = True
+			if result.markerQuery.comment:
+				comment = result.markerQuery.comment
 		else:
 			self.movetoButton.Enabled = False
+			if result.comment:
+				comment = result.comment
+		self.ruleComment.SetValue(comment)
 		self.deleteButton.Enabled = True
 		self.editButton.Enabled = True
-
 
 	def OnEdit(self, evt):
 		sel = self.ruleTree.Selection
