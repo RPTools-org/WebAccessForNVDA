@@ -259,6 +259,8 @@ class Dialog(wx.Dialog):
 
 
 	def OnRuleListChoice(self, evt):
+		if evt.EventObject is None or evt.EventObject.IsBeingDeleted():
+			return
 		sel = self.ruleTree.Selection
 		if sel < 0:
 			self.movetoButton.Enabled = False
