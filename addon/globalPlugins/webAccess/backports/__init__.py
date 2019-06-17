@@ -1,4 +1,4 @@
-# globalPlugins/webAccess/gui/__init__.py
+# globalPlugins/webAccess/gui/backports/__init__.py
 # -*- coding: utf-8 -*-
 
 # This file is part of Web Access for NVDA.
@@ -19,22 +19,7 @@
 #
 # See the file COPYING.txt at the root of this distribution for more details.
 
-"""Web Access GUI."""
-
-__version__ = "2019.06.19"
-__author__ = "Julien Cochuyt <j.cochuyt@accessolutions.fr>"
-
-import wx
-
-try:
-	import wx.lib.mixins.listctrl as listmix
-except ImportError:
-	from ..backports.nvda_2016_4 import wx_lib_mixins_listctrl as listmix
-
- 
-class ListCtrlAutoWidth(
-		wx.ListCtrl,
-		listmix.ListCtrlAutoWidthMixin):
-	def __init__(self, *args, **kwargs):
-		wx.ListCtrl.__init__(self, *args, **kwargs)
-		listmix.ListCtrlAutoWidthMixin.__init__(self)
+"""
+This package contains modules from NVDA and its wxPython bundle, back-ported
+here to ease support of older versions of NVDA.
+"""
