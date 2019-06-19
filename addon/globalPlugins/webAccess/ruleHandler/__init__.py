@@ -90,7 +90,10 @@ def showEditor(context, new=False):
 			del context["rule"]
 		if "data" in context:
 			del context["data"]["rule"]
-	return ruleEditor.show(context)
+	gui.mainFrame.prePopup()
+	# ruleEditor.RuleEditorDialog(gui.mainFrame, ruleEditor.GeneralPanel).Show()
+	ruleEditor.RuleEditorDialog(gui.mainFrame).Show()
+	gui.mainFrame.postPopup()
 
 
 def showManager(context):
