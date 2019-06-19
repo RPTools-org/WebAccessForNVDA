@@ -43,8 +43,6 @@ import NVDAObjects
 import speech
 import textInfos
 import ui
-from versionInfo import version_year, version_major
-
 
 try:
 	from six.moves import xrange
@@ -57,6 +55,24 @@ addonHandler.initTranslation()
 
 
 SCRIPT_CATEGORY = "WebAccess"
+
+
+def nvdaSuffersFrom9566():
+	"""
+	Checks whether this version of NVDA suffers from bug #9566.
+	
+	Introduced by 393b55b in 2017.3 and later fixed as of c20a503 in 2019.2 
+	"""
+	try:
+		# Introduced in NVDA 2016.4
+		from versionInfo import version_year, version_major
+	except ImportError:
+		return False
+	return (
+		(version_year == 2017 and version_major >= 3) or version_year > 2017
+	) and (
+		(version_year == 2019 and version_major < 2) or version_year < 2019
+	)
 
 
 def getDynamicClass(bases):
@@ -563,14 +579,8 @@ class WebAccessObject(NVDAObjects.NVDAObject):
 					except:
 						log.exception()
 	
-	if (
-		(version_year == 2017 and version_major >= 3) or version_year > 2017
-	) and (
-		(version_year == 2019 and version_major < 2) or version_year < 2019
-	):
-		# Workaround for NVDA bug #9566, introduced by 393b55b in 2017.3
-		# and later fixed as of c20a503 in 2019.2 
-				
+	if nvdaSuffersFrom9566():
+		# Workaround for NVDA bug #9566
 		def _get_columnNumber(self):
 			res = super(WebAccessObject, self)._get_columnNumber()
 			try:
