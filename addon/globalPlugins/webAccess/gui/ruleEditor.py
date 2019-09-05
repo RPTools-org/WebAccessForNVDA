@@ -53,26 +53,24 @@ class CriteriaPanel(SettingsPanel):
 		# Criteria sets
 		criteriaSetsLabel = wx.StaticText(self, label=_("&Criteria sets"))
 		self.criteriaSetsList = wx.ListBox(self)
+		self.criteriaSetsList.Bind(wx.EVT_LISTBOX, self.onCriteriaChange)
 
 		# Criteria summary
 		criteriaSummaryLabel = wx.StaticText(self, label=_("Criteria &summary"))
 		self.criteriaSummary = wx.TextCtrl(self, size=(220, 100), style=wx.TE_MULTILINE | wx.TE_READONLY)
 
 		# Buttons
-		newButton = wx.Button(self, label=_("&New"))
-		newButton.Bind(wx.EVT_BUTTON, self.onCriteriaBtn)
-		editButton = wx.Button(self, label=_("&Edit"))
-		editButton.Bind(wx.EVT_BUTTON, self.onCriteriaBtn)
-		deleteButton = wx.Button(self, label=_("&Delete"))
-		deleteButton.Bind(wx.EVT_BUTTON, self.onCriteriaBtn)
+		self.newButton = wx.Button(self, label=_("&New"))
+		self.editButton = wx.Button(self, label=_("&Edit"))
+		self.deleteButton = wx.Button(self, label=_("&Delete"))
 
 		buttonSizer = wx.BoxSizer(wx.HORIZONTAL)
 		buttonSizer.AddMany((
-			newButton,
+			self.newButton,
 			(5,5),
-			editButton,
+			self.editButton,
 			(5,5),
-			deleteButton
+			self.deleteButton
 		))
 
 		mainGridSizer.Add(criteriaSetsLabel)
@@ -86,66 +84,88 @@ class CriteriaPanel(SettingsPanel):
 		self.initData()
 
 	def initData(self):
-		self.isValidData = True
+		self.criterias = []
+		self.newButton.Bind(wx.EVT_BUTTON, self.onNewCriteriaBtn)
+		self.editButton.Bind(wx.EVT_BUTTON, self.onEditCriteriaBtn)
+		self.deleteButton.Bind(wx.EVT_BUTTON, self.onDeleteCriteriaBtn)
+		self.editButton.Disable()
+		self.deleteButton.Disable()
 
 		if newRule:
 			self.criteriaSetsList.Clear()
 			self.criteriaSummary.Value = ""
-			self.criteriaSetsList.InsertItems(["Mon super critere"], 0) #todo:
 
-		# else:
-		# 	for index, key in enumerate(ruleTypes.ruleTypeLabels.keys()):
-		# 		if key == globalRule["type"]:
-		# 			self.ruleType.SetSelection(index)
-		# 			break
-		# 	self.ruleName.Value = globalRule["name"]
-		# 	self.ruleDocumentation.Value = globalRule["comment"]
-		# todo: populate if given
+		# todo: Fake data, implement real way to get data and save it
+		else:
+			criteria1 = {
+				'name': "mon super critere",
+				'sequenceOrder': 0,
+				'notes': "Des notes partout sur mon super critere"
+				}
+			criteria2 = {
+				'name': "mon super critere 2",
+				'sequenceOrder': 1,
+				'notes': "Des notes et des notes"
+				}
+			self.criterias.append(criteria1)
+			self.criterias.append(criteria2)
+			for criteria in self.criterias:
+				self.criteriaSetsList.Append(criteria['name'])
 
-	def onCriteriaBtn(self, evt):
+
+	def onNewCriteriaBtn(self, evt):
 		from ..gui import criteriaSetEditor
 		gui.mainFrame.prePopup()
-		criteriaSetEditor.CriteriaSetEditorDialog(gui.mainFrame, rule=globalRule).Show()
+		with criteriaSetEditor.CriteriaSetEditorDialog(gui.mainFrame) as dlg:
+			if dlg.ShowModal() == wx.ID_OK:
+				self.criterias.append(dlg.criteria)
+				self.refreshCriterias()
 		gui.mainFrame.postPopup()
-		# with RuleCriteriaEditor(self) as dlg:
-		# 	if dlg.ShowModal(self.context) == wx.ID_OK:
-		# 		self.refreshCriteria()
 
-	def isValid(self):
-		return self.isValidData
+	def onEditCriteriaBtn(self, evt):
+		from ..gui import criteriaSetEditor
+		gui.mainFrame.prePopup()
+		selectedCriteria = self.criterias[self.criteriaSetsList.Selection]
+		with criteriaSetEditor.CriteriaSetEditorDialog(gui.mainFrame, criteria=selectedCriteria) as dlg:
+			if dlg.ShowModal() == wx.ID_OK:
+				selectedCriteria = dlg.criteria
+				self.refreshCriterias(self.criteriaSetsList.Selection)
+		gui.mainFrame.postPopup()
+		
+	def onDeleteCriteriaBtn(self, evt):
+		with wx.GenericMessageDialog(self, _("Are you sure you want to delete this criteria ?")) as dlg:
+			if dlg.ShowModal() == wx.ID_OK:
+				selectedCriteria = self.criterias[self.criteriaSetsList.Selection]
+				self.criterias.remove(selectedCriteria)
+				self.refreshCriterias(-1)
+	
+	def onCriteriaChange(self, evt):
+		if not self.editButton.Enabled:
+			self.editButton.Enable(enable=True)
+			self.deleteButton.Enable(enable=True)
+		selectedCriteria = self.criterias[self.criteriaSetsList.Selection]
+		self.criteriaSummary.Value = selectedCriteria["name"] + " - " + str(selectedCriteria["sequenceOrder"] + 1)
+	
+	def refreshCriterias(self, criteriaSelected=None):
+		self.criteriaSetsList.Clear()
+		for criteria in self.criterias:
+				self.criteriaSetsList.Append(criteria['name'])
+		if criteriaSelected is not None:
+			self.criteriaSetsList.Selection = criteriaSelected
+			if criteriaSelected > -1:
+				self.onCriteriaChange(None)
+			else:
+				self.criteriaSummary.Value = ""
+				self.editButton.Disable()
+				self.deleteButton.Disable()
+		else:
+			self.criteriaSetsList.Selection = len(self.criterias) - 1
+			self.onCriteriaChange(None)
+		
 	
 	def onSave(self):
-		self.isValidData = True
-
-		# # Type is required
-		# if not self.ruleType.Selection >= 0:
-		# 	gui.messageBox(
-		# 		message=_("You must choose a type for this rule"),
-		# 		caption=_("Error"),
-		# 		style=wx.OK | wx.ICON_ERROR,
-		# 		parent=self
-		# 	)
-		# 	self.isValidData = False
-		# 	self.ruleType.SetFocus()
-		# 	return
-		# else:
-		# 	globalRule["type"] = ruleTypes.ruleTypeLabels.keys()[self.ruleType.Selection]
-
-		# # Name is required
-		# if not self.ruleName.Value.strip():
-		# 	gui.messageBox(
-		# 		message=_("You must choose a name for this rule"),
-		# 		caption=_("Error"),
-		# 		style=wx.OK | wx.ICON_ERROR,
-		# 		parent=self
-		# 	)
-		# 	self.isValidData = False
-		# 	self.ruleName.SetFocus()
-		# 	return
-		# else:
-		# 	globalRule["name"] = self.ruleName.Value
-		
-		# globalRule["comment"] = self.ruleDocumentation.Value
+		# todo: save real data
+		print("SAVE")
 
 
 class GeneralPanel(SettingsPanel):
@@ -220,7 +240,7 @@ class GeneralPanel(SettingsPanel):
 					self.ruleType.SetSelection(index)
 					break
 			self.ruleName.Value = globalRule["name"]
-			self.ruleDocumentation.Value = globalRule["comment"]
+			self.ruleDocumentation.Value = globalRule.get("comment", "")
 		# todo: Init summary
 
 	def isValid(self):
@@ -257,7 +277,8 @@ class GeneralPanel(SettingsPanel):
 		else:
 			globalRule["name"] = self.ruleName.Value
 		
-		globalRule["comment"] = self.ruleDocumentation.Value
+		if self.ruleDocumentation.Value:
+			globalRule["comment"] = self.ruleDocumentation.Value
 
 
 class RuleEditorDialog(MultiCategorySettingsDialog):
@@ -269,7 +290,10 @@ class RuleEditorDialog(MultiCategorySettingsDialog):
 	MIN_SIZE = (470, 240)
 
 
-	def __init__(self, parent, initialCategory=None, context=None):
+	def __init__(self, parent, initialCategory=None, context=None, new=False):
+		global newRule
+		newRule = new
+		
 		self.initialCategory = initialCategory
 		self.currentCategory = None
 		self.setPostInitFocus = None
@@ -284,14 +308,11 @@ class RuleEditorDialog(MultiCategorySettingsDialog):
 
 	def initData(self, context):
 		global globalRule
-		global newRule
-
 		self.context = context
 		self.rule = context.get("rule")
 		self.markerManager = context["webModule"].markerManager
 
 		if context.get("rule"):
-			newRule = False
 			globalRule = context.get("rule").getData().copy()
 		else:
 			globalRule = OrderedDict()
