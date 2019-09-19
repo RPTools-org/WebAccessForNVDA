@@ -1,22 +1,439 @@
 # -*- coding: utf-8 -*-
 
 import wx
+import re
+import gui
+from collections import OrderedDict
+from ..ruleHandler import ruleTypes
+from ..gui import ruleEditor
+import controlTypes
 
 try:
 	from gui.settingsDialogs import (
 		MultiCategorySettingsDialog,
+		SettingsDialog,
 		SettingsPanel
 	)
 except ImportError:
 	from ..backports.nvda_2018_2.gui_settingsDialogs import (
 		MultiCategorySettingsDialog,
+		SettingsDialog,
 		SettingsPanel
 	)
 
-globalCriteria = False
+try:
+	from six import iteritems, text_type
+except ImportError:
+	# NVDA version < 2018.3
+	iteritems = dict.iteritems
+	text_type = unicode
+
+globalNewCriteria = True
+globalNbCriterias = 0
+globalSelectedCriteria = 0
+globalCriteria = None
+
+LABEL_ACCEL = re.compile("&(?!&)")
+"""
+Compiled pattern used to strip accelerator key indicators from labels.
+"""
+EXPR_VALUE = re.compile("(([^!&| ])+( (?=[^!&|]))*)+")
+"""
+Compiled pattern used to capture values in expressions.
+"""
+EXPR = re.compile("^ *!? *[^!&|]+( *[&|] *!? *[^!&|]+)*$")
+"""
+Compiled pattern used to validate expressions.
+"""
+EXPR_INT = re.compile("^ *!? *[0-9]+( *[&|] *!? *[0-9]+)* *$")
+"""
+Compiled pattern used to validate expressions whose values are integers.
+"""
+
+def captureValues(expr):
+	"""
+	Yields value, startPos, endPos
+	"""
+	for match in EXPR_VALUE.finditer(expr):
+		span = match.span()
+		yield expr[span[0]:span[1]], span[0], span[1]
+
+def getStatesLblExprForSet(states):
+	return " & ".join((
+		controlTypes.stateLabels.get(state, state)
+		for state in states
+	))
+	
+def translateExprValues(expr, func):
+	buf = list(expr)
+	offset = 0
+	for src, start, end in captureValues(expr):
+		dest = text_type(func(src))
+		start += offset
+		end += offset
+		buf[start:end] = dest
+		offset += len(dest) - len(src)
+	return u"".join(buf)
+
+def translateRoleIdToLbl(expr):
+	def translate(value):
+		try:
+			return controlTypes.roleLabels[int(value)]
+		except (KeyError, ValueError):
+			return value
+	return translateExprValues(expr, translate)
+
+def translateStatesIdToLbl(expr):
+	def translate(value):
+		try:
+			return controlTypes.stateLabels[int(value)]
+		except (KeyError, ValueError):
+			return value
+	return translateExprValues(expr, translate)
+
+def translateRoleLblToId(expr):
+	def translate(value):
+		for key, candidate in iteritems(controlTypes.roleLabels):
+			if candidate == value:
+				return text_type(key)
+		return value
+	return translateExprValues(expr, translate)
+
+def stripAccel(label):
+	return LABEL_ACCEL.sub("", label)
+
+def stripAccelAndColon(label):
+	return stripAccel(label).rstrip(":").rstrip()
+
+
+# todo: make this panel
+class OverridesPanes(SettingsPanel):
+	# Translators: This is the label for the overrides's panel.
+	title = _("Overrides")
+
+
+class CriteriaPanel(SettingsPanel):
+	# Translators: This is the label for the criteria's panel.
+	title = _("Criteria")
+	
+	# The semi-column is part of the labels because some localizations
+	# (ie. French) require it to be prepended with one space.
+	FIELDS = OrderedDict((
+		# Translator: Field label on the RuleCriteriaEditor dialog.
+		("text", pgettext("webAccess.ruleCriteria", u"&Text")),
+		# Translator: Field label on the RuleCriteriaEditor dialog.
+		("role", pgettext("webAccess.ruleCriteria", u"&Role")),
+		# Translator: Field label on the RuleCriteriaEditor dialog.
+		("tag", pgettext("webAccess.ruleCriteria", u"T&ag")),
+		# Translator: Field label on the RuleCriteriaEditor dialog.
+		("id", pgettext("webAccess.ruleCriteria", u"&ID")),
+		# Translator: Field label on the RuleCriteriaEditor dialog.
+		("className", pgettext("webAccess.ruleCriteria", u"&Class")),
+		# Translator: Field label on the RuleCriteriaEditor dialog.
+		("states", pgettext("webAccess.ruleCriteria", u"&States")),
+		# Translator: Field label on the RuleCriteriaEditor dialog.
+		("src", pgettext("webAccess.ruleCriteria", u"Ima&ge source")),
+		# Translator: Field label on the RuleCriteriaEditor dialog.
+		("relativePath", pgettext("webAccess.ruleCriteria", u"R&elative path")),
+		# Translator: Field label on the RuleCriteriaEditor dialog.
+		("index", pgettext("webAccess.ruleCriteria", u"Inde&x")),
+	))
+	
+	@classmethod
+	def getSummary(cls, data):
+		parts = []
+		for key, label in cls.FIELDS.items():
+			if key in data:
+				value = data[key]
+				if key == "role":
+					value = translateRoleIdToLbl(value)
+				elif key == "states":
+					value = translateStatesIdToLbl(value)
+				parts.append(u"{} {}".format(stripAccel(label), value))
+		if parts:
+			return "\n".join(parts)
+		else:
+			# Translators: Fail-back criteria summary in RuleEditor dialog.
+			return _("No criteria")
+	
+	def makeSettings(self, settingsSizer):
+		marginSizer = wx.BoxSizer(wx.HORIZONTAL)
+		mainSizer = wx.BoxSizer(wx.VERTICAL)
+		marginSizer.AddSpacer(10)
+		marginSizer.Add(mainSizer)
+		settingsSizer.Add(marginSizer, flag=wx.EXPAND, proportion=1)
+		flexGridSizer = wx.FlexGridSizer(cols=2, vgap=10, hgap=10)
+		mainSizer.Add(flexGridSizer)
+		
+		textLabel = wx.StaticText(self, label=self.FIELDS["text"])
+		self.textContext = wx.ComboBox(self, size=(200, -1))
+		
+		roleLabel = wx.StaticText(self, label=self.FIELDS["role"])
+		self.roleContext = wx.ComboBox(self)
+
+		tagLabel = wx.StaticText(self, label=self.FIELDS["tag"])
+		self.tagContext = wx.ComboBox(self)
+		
+		idLabel = wx.StaticText(self, label=self.FIELDS["id"])
+		self.idContext = wx.ComboBox(self)
+		
+		classNameLabel = wx.StaticText(self, label=self.FIELDS["className"])
+		self.classNameContext = wx.ComboBox(self)
+
+		statesLabel = wx.StaticText(self, label=self.FIELDS["states"])
+		self.statesContext = wx.ComboBox(self)
+		
+		srcLabel = wx.StaticText(self, label=self.FIELDS["src"])
+		self.srcContext = wx.ComboBox(self)
+		
+		relativePathLabel = wx.StaticText(self, label=self.FIELDS["relativePath"])
+		self.relativePathContext = wx.TextCtrl(self)
+
+		indexLabel = wx.StaticText(self, label=self.FIELDS["index"])
+		self.indexContext = wx.TextCtrl(self)
+		
+		flexGridSizer.Add(textLabel, flag=wx.ALIGN_CENTER_VERTICAL)
+		flexGridSizer.Add(self.textContext, flag=wx.EXPAND)
+		flexGridSizer.Add(roleLabel, flag=wx.ALIGN_CENTER_VERTICAL)
+		flexGridSizer.Add(self.roleContext, flag=wx.EXPAND)
+		flexGridSizer.Add(tagLabel, flag=wx.ALIGN_CENTER_VERTICAL)
+		flexGridSizer.Add(self.tagContext, flag=wx.EXPAND)
+		flexGridSizer.Add(idLabel, flag=wx.ALIGN_CENTER_VERTICAL)
+		flexGridSizer.Add(self.idContext, flag=wx.EXPAND)
+		flexGridSizer.Add(classNameLabel, flag=wx.ALIGN_CENTER_VERTICAL)
+		flexGridSizer.Add(self.classNameContext, flag=wx.EXPAND)
+		flexGridSizer.Add(statesLabel, flag=wx.ALIGN_CENTER_VERTICAL)
+		flexGridSizer.Add(self.statesContext, flag=wx.EXPAND)
+		flexGridSizer.Add(srcLabel, flag=wx.ALIGN_CENTER_VERTICAL)
+		flexGridSizer.Add(self.srcContext, flag=wx.EXPAND)
+		flexGridSizer.Add(relativePathLabel, flag=wx.ALIGN_CENTER_VERTICAL)
+		flexGridSizer.Add(self.relativePathContext, flag=wx.EXPAND)
+		flexGridSizer.Add(indexLabel, flag=wx.ALIGN_CENTER_VERTICAL)
+		flexGridSizer.Add(self.indexContext, flag=wx.EXPAND)
+		
+		self.initData()
+		
+	def initData(self):
+		self.isValidData = True
+		markerManager = ruleEditor.globalContext["webModule"].markerManager
+		
+		if markerManager.nodeManager:
+			node = markerManager.nodeManager.getCaretNode()
+			textNode = node
+			node = node.parent
+			t = textNode.text
+			if t == " ":
+				t = ""
+			textChoices = [t]
+			if node.previousTextNode is not None:
+				textChoices.append("<" + node.previousTextNode.text)
+			
+			roleChoices = []
+			tagChoices = []
+			idChoices = []
+			classChoices = []
+			statesChoices = []
+			srcChoices = []
+			# todo: actually there are empty choices created
+			while node is not None:
+				roleChoices.append(controlTypes.roleLabels.get(node.role, "") or "")
+				tagChoices.append(node.tag or "")
+				idChoices.append(node.id or "")
+				classChoices.append(node.className or "")
+				statesChoices.append(getStatesLblExprForSet(node.states) or "")
+				srcChoices.append(node.src or "")
+				node = node.parent
+			
+			self.textContext.Set(textChoices)
+			self.roleContext.Set(roleChoices)
+			self.tagContext.Set(tagChoices)
+			self.idContext.Set(idChoices)
+			self.classNameContext.Set(classChoices)
+			self.statesContext.Set(statesChoices)
+			self.srcContext.Set(srcChoices)
+		
+		self.textContext.Value = globalCriteria.get("text", "")
+		self.roleContext.Value = translateRoleIdToLbl(globalCriteria.get("role", ""))
+		self.tagContext.Value = globalCriteria.get("tag", "")
+		self.idContext.Value = globalCriteria.get("id", "")
+		self.classNameContext.Value = globalCriteria.get("className", "")
+		self.statesContext.Value = translateStatesIdToLbl(globalCriteria.get("states", ""))
+		self.srcContext.Value = globalCriteria.get("src", "")
+		self.relativePathContext.Value = str(globalCriteria.get("relativePath", ""))
+		self.indexContext.Value = str(globalCriteria.get("index", ""))
+		
+	def isValid(self):
+		return self.isValidData
+		
+	def onSave(self):
+		self.isValidData = True
+		globalCriteria["text"] = self.textContext.Value.strip()
+		globalCriteria["tag"] = self.tagContext.Value.strip()
+		globalCriteria["id"] = self.idContext.Value.strip()
+		globalCriteria["className"] = self.classNameContext.Value.strip()
+		globalCriteria["src"] = self.srcContext.Value.strip()
+		globalCriteria["relativePath"] = self.relativePathContext.Value.strip()
+		
+		roleLblExpr = self.roleContext.Value
+		if roleLblExpr:
+			if not EXPR.match(roleLblExpr):
+				gui.messageBox(
+					message=(_('Syntax error in the field "{field}"'))
+							.format(field=stripAccelAndColon(self.FIELDS["role"])),
+					caption=_("Error"),
+					style=wx.OK | wx.ICON_ERROR,
+					parent=self
+				)
+				self.isValidData = False
+				self.roleContext.SetFocus()
+				return
+			roleIdExpr = translateRoleLblToId(roleLblExpr)
+			if not EXPR_INT.match(roleIdExpr):
+				gui.messageBox(
+					message=(_('Unknown identifier in the field "{field}"'))
+							.format(field=stripAccelAndColon(self.FIELDS["role"])),
+					caption=_("Error"),
+					style=wx.OK | wx.ICON_ERROR,
+					parent=self
+				)
+				self.isValidData = False
+				self.roleContext.SetFocus()
+				return
+			globalCriteria["role"] = roleIdExpr
+			
+		statesLblExpr = self.statesContext.Value
+		if statesLblExpr:
+			if not EXPR.match(statesLblExpr):
+				gui.messageBox(
+					message=(_('Syntax error in the field "{field}"'))
+							.format(field=stripAccelAndColon(self.FIELDS["states"])),
+					caption=_("Error"),
+					style=wx.OK | wx.ICON_ERROR,
+					parent=self
+				)
+				self.isValidData = False
+				self.statesContext.SetFocus()
+				return
+			statesIdExpr = translateStatesLblToId(statesLblExpr)
+			if not EXPR_INT.match(statesIdExpr):
+				gui.messageBox(
+					message=(_('Unknown identifier in the field "{field}"'))
+							.format(field=stripAccelAndColon(self.FIELDS["states"])),
+					caption=_("Error"),
+					style=wx.OK | wx.ICON_ERROR,
+					parent=self
+				)
+				self.isValidData = False
+				self.statesContext.SetFocus()
+				return
+			globalCriteria["states"] = statesIdExpr
+			
+		index = self.indexContext.Value
+		if index.strip():
+			try:
+				index = int(index)
+			except:
+				index = 0
+			if index > 0:
+				globalCriteria["index"] = index
+			else:
+				gui.messageBox(
+					message=_("Index, if set, must be a positive integer."),
+					caption=_("Error"),
+					style=wx.OK | wx.ICON_ERROR,
+					parent=self
+				)
+				self.isValidData = False
+				self.indexContext.SetFocus()
+				return
+
+
+class ContextPanel(SettingsPanel):
+	# Translators: This is the label for the criteria context panel.
+	title = _("Context")
+	
+	# The semi-column is part of the labels because some localizations
+	# (ie. French) require it to be prepended with one space.
+	FIELDS = OrderedDict((
+		# Translator: Field label on the RuleContextEditor dialog.
+		("contextPageTitle", pgettext("webAccess.ruleContext", u"Page &title")),
+		# Translator: Field label on the RuleContextEditor dialog.
+		("contextPageType", pgettext("webAccess.ruleContext", u"Page t&ype")),
+		# Translator: Field label on the RuleContextEditor dialog.
+		("contextParent", pgettext("webAccess.ruleContext", u"&Parent element")),
+	))
+	
+	@classmethod
+	def getSummary(cls, data):
+		parts = []
+		for key, label in cls.FIELDS.items():
+			if key in data:
+				parts.append(u"{} {}".format(stripAccel(label), data[key]))
+		if parts:
+			return "\n".join(parts)
+		else:
+			# Translators: Fail-back context summary in RuleEditor dialog.
+			return _("Global - Applies to the whole web module.")
+	
+	def makeSettings(self, settingsSizer):
+		marginSizer = wx.BoxSizer(wx.HORIZONTAL)
+		mainSizer = wx.BoxSizer(wx.VERTICAL)
+		marginSizer.AddSpacer(10)
+		marginSizer.Add(mainSizer)
+		settingsSizer.Add(marginSizer, flag=wx.EXPAND, proportion=1)
+		flexGridSizer = wx.FlexGridSizer(rows=3, cols=2, vgap=10, hgap=10)
+		mainSizer.Add(flexGridSizer)
+		
+		self.pageTitleLabel = wx.StaticText(self, label=self.FIELDS["contextPageTitle"])
+		self.pageTitleContext = wx.ComboBox(self, size=(200, -1))
+		
+		pageTypeLabel = wx.StaticText(self, label=self.FIELDS["contextPageType"])
+		self.pageTypeContext = wx.ComboBox(self)
+
+		parentElementLabel = wx.StaticText(self, label=self.FIELDS["contextParent"])
+		self.parentElementContext = wx.ComboBox(self)
+		
+		flexGridSizer.Add(self.pageTitleLabel, flag=wx.ALIGN_CENTER_VERTICAL)
+		flexGridSizer.Add(self.pageTitleContext, flag=wx.EXPAND)
+		flexGridSizer.Add(pageTypeLabel, flag=wx.ALIGN_CENTER_VERTICAL)
+		flexGridSizer.Add(self.pageTypeContext, flag=wx.EXPAND)
+		flexGridSizer.Add(parentElementLabel, flag=wx.ALIGN_CENTER_VERTICAL)
+		flexGridSizer.Add(self.parentElementContext, flag=wx.EXPAND)
+
+		self.initData()
+
+	def initData(self):
+		markerManager = ruleEditor.globalContext["webModule"].markerManager
+		
+		showPageTitle = ruleEditor.globalRule.get("type", "") != ruleTypes.PAGE_TITLE_1
+		if showPageTitle:
+			self.pageTitleContext.Set([ruleEditor.globalContext["pageTitle"]])
+			self.pageTitleContext.Value = globalCriteria.get("contextPageTitle", "")
+		self.pageTitleLabel.Show(showPageTitle)
+		self.pageTitleContext.Show(showPageTitle)
+		
+		self.pageTypeContext.Set(markerManager.getPageTypes())
+		self.pageTypeContext.Value = globalCriteria.get("contextPageType", "")
+
+		parents = []
+		for result in markerManager.getResults():
+			query = result.markerQuery
+			if (
+				query.type in (ruleTypes.PARENT, ruleTypes.ZONE)
+				and node in result.node
+			):
+				parents.insert(0, query.name)
+		self.parentElementContext.Set(parents)
+		self.parentElementContext.Value = globalCriteria.get("contextParent", "")
+
+	def onSave(self):
+		ruleEditor.setIfNotEmpty(globalCriteria, "contextPageTitle", self.pageTitleContext.Value)
+		ruleEditor.setIfNotEmpty(globalCriteria, "contextPageType", self.pageTypeContext.Value)
+		ruleEditor.setIfNotEmpty(globalCriteria, "contextParent", self.parentElementContext.Value)
+
 
 class GeneralPanel(SettingsPanel):
-	# Translators: This is the label for the general settings panel.
+	# Translators: This is the label for the criteria general panel.
 	title = _("General")
 
 	def makeSettings(self, settingsSizer):
@@ -26,15 +443,12 @@ class GeneralPanel(SettingsPanel):
 		marginSizer.Add(mainSizer)
 		settingsSizer.Add(marginSizer, flag=wx.EXPAND, proportion=1)
 		
-		# Name
 		nameLabel = wx.StaticText(self, label=_("&Name"))
 		self.criteriaName = wx.TextCtrl(self)
 		
-		# Sequence order
 		sequenceLabel = wx.StaticText(self, label=_("&Sequence order"))
 		self.criteriaOrder = wx.Choice(self)
 
-		# Technical notes
 		notesLabel = wx.StaticText(self, label=_("Technical &notes"))
 		self.criteriaNotes = wx.TextCtrl(self, size=(300, 200), style=wx.TE_MULTILINE)
 		
@@ -50,45 +464,47 @@ class GeneralPanel(SettingsPanel):
 		self.initData()
 
 	def initData(self):
-		# todo: Init criteriaOrder
-		self.criteriaOrder.AppendItems(["order 1", "order 2", "order 3"])
+		nbCriteriasAfterCreation = globalNbCriterias + 1 if globalNewCriteria else globalNbCriterias
+		for i in range(nbCriteriasAfterCreation):
+			self.criteriaOrder.Append(str(i + 1))
 		
-		if not globalCriteria:
-			self.criteriaName.Value = ""
-			self.criteriaOrder.SetSelection(-1)
-			self.criteriaNotes.Value = ""
-			
-		# todo: Real initialisation
+		if globalNewCriteria:
+			self.criteriaOrder.SetSelection(globalNbCriterias)
 		else:
-			self.criteriaName.Value = globalCriteria.get("name", "")
-			self.criteriaNotes.Value = globalCriteria.get("notes", "")
-			self.criteriaOrder.SetSelection(globalCriteria.get("sequenceOrder", -1))
+			self.criteriaOrder.SetSelection(globalSelectedCriteria)
+			
+		self.criteriaName.Value = globalCriteria.get("name", "")
+		self.criteriaNotes.Value = globalCriteria.get("notes", "")
 	
 	def onSave(self):
-		if self.criteriaName.Value:
-			globalCriteria['name'] = self.criteriaName.Value
-		if self.criteriaNotes.Value:
-			globalCriteria["notes"] = self.criteriaNotes.Value
-		if self.criteriaOrder.Selection != -1:
-			globalCriteria["sequenceOrder"] = self.criteriaOrder.Selection
+		global globalSelectedCriteria
+		globalSelectedCriteria = self.criteriaOrder.Selection
+		ruleEditor.setIfNotEmpty(globalCriteria, "name", self.criteriaName.Value)
+		ruleEditor.setIfNotEmpty(globalCriteria, "notes", self.criteriaNotes.Value)
 
 
 class CriteriaSetEditorDialog(MultiCategorySettingsDialog):
 
 	# Translators: This is the label for the WebAccess settings dialog.
 	title = _("WebAccess Criteria set editor")
-	categoryClasses = [GeneralPanel]
+	categoryClasses = [GeneralPanel, ContextPanel, CriteriaPanel]
 	INITIAL_SIZE = (800, 480)
 	MIN_SIZE = (470, 240)
 
-
-	def __init__(self, parent, initialCategory=None, criteria=None):
+	def __init__(self, parent, criterias, selectedCriteria=None):
 		global globalCriteria
-		if criteria:
-			globalCriteria = criteria
+		global globalNbCriterias
+		global globalSelectedCriteria
+		global globalNewCriteria
+		if selectedCriteria is not None:
+			globalCriteria = criterias[selectedCriteria]
+			globalSelectedCriteria = selectedCriteria
+			globalNewCriteria = False
 		else:
 			globalCriteria = dict()
-		self.initialCategory = initialCategory
+		globalNbCriterias = len(criterias)
+		
+		self.initialCategory = None
 		self.currentCategory = None
 		self.setPostInitFocus = None
 		self.catIdToInstanceMap = {}
@@ -110,10 +526,11 @@ class CriteriaSetEditorDialog(MultiCategorySettingsDialog):
 		except ValueError:
 			log.debugWarning("", exc_info=True)
 			return
-
+		for panel in self.catIdToInstanceMap.values():
+			panel.Destroy()
 		self.criteria = globalCriteria
-		wx.Dialog.ProcessEvent(self, evt)
-		super(MultiCategorySettingsDialog, self).onOk(evt)
+		self.sequenceOrder = globalSelectedCriteria
+		SettingsDialog.onOk(self, evt)
 
 	def Destroy(self):
 		super(CriteriaSetEditorDialog, self).Destroy()
