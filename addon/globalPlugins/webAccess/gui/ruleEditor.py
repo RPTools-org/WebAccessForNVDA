@@ -3,6 +3,7 @@
 import wx
 
 import gui
+import inputCore
 from collections import OrderedDict
 from logHandler import log
 
@@ -10,6 +11,11 @@ from .. import ruleHandler
 from ..ruleHandler import ruleTypes
 import controlTypes
 from .. import webModuleHandler
+
+from ..ruleHandler.controlMutation import (
+	MUTATIONS_BY_RULE_TYPE,
+	mutationLabels
+)
 
 try:
 	from gui import guiHelper
@@ -43,10 +49,9 @@ globalContext = None
 globalRule = None
 newRule = True
 
-
-class PropertiesPanel(SettingsPanel):
-	# Translators: This is the label for the properties settings panel.
-	title = _("Properties")
+class ActionsPanel(SettingsPanel):
+	# Translators: This is the label for the rule dialog's action panel.
+	title = _("Actions")
 	
 	def makeSettings(self, settingsSizer):
 		marginSizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -55,12 +60,306 @@ class PropertiesPanel(SettingsPanel):
 		marginSizer.Add(mainSizer)
 		settingsSizer.Add(marginSizer, flag=wx.EXPAND, proportion=1)
 		
+		# Translators: Text showed when the selected type doesn't have actions available
+		self.noActionsTxt = wx.StaticText(self, label=_("No actions available for the selected rule type."))
+		mainSizer.Add(self.noActionsTxt)
+		
+		self.mainGridSizer = wx.GridBagSizer(vgap=5, hgap=10)
+		mainSizer.Add(self.mainGridSizer)
+		
+		# Translators: Keyboard shortcut input label for the rule dialog's action panel.
+		gesturesLabel = wx.StaticText(self, label=_("&Keyboard shortcut"))
+		self.gesturesList = wx.ListBox(self)
+
+		# Translators: Add a keyboard shortcut button label for the rule dialog's action panel.
+		self.addButton = wx.Button(self, label=_("Add a keyboard shortcut"))
+		# Translators: Delete a keyboard shortcut button label for the rule dialog's action panel.
+		self.deleteButton = wx.Button(self, label=_("Delete this shortcut"))
+		self.deleteButton.Bind(wx.EVT_BUTTON, self.onDeleteGesture)
+
+		# Translators: Automatic action at rule detection input label for the rule dialog's action panel.
+		actionLabel = wx.StaticText(self, label=_("&Automatic action at rule detection"))
+		self.actionList = wx.ComboBox(self, style=wx.CB_READONLY)
+		
+		self.mainGridSizer.AddMany([
+				(gesturesLabel, (0,0), (1,2)),
+				(self.gesturesList, (1,0), (2,1), wx.EXPAND),
+				(self.addButton, (1,1), (1,1), wx.EXPAND),
+				(self.deleteButton, (2,1), (1,1), wx.EXPAND),
+				(5,5, (3,0)),
+				(actionLabel, (4,0), (1,2)),
+				(self.actionList, (5,0), (1,2), wx.EXPAND)
+			])
+		
+		self.initData()
+		
+	def onAddGesture(self, evt):
+		from ..gui import shortcutDialog
+		shortcutDialog.markerManager = self.markerManager
+		if shortcutDialog.show():
+			self.gestureMapValue[shortcutDialog.resultShortcut] = shortcutDialog.resultActionData
+			self.updateGesturesList(shortcutDialog.resultShortcut)
+			self.gesturesList.SetFocus()
+		
+	def onDeleteGesture(self, evt):
+		gestureIdentifier = self.gesturesList.GetClientData(self.gesturesList.Selection)
+		del self.gestureMapValue[gestureIdentifier]
+		self.updateGesturesList()
+		
+	def updateGesturesList(self, newGestureIdentifier=None):
+		self.gesturesList.Clear()
+		i = 0
+		sel = 0
+		for gestureIdentifier in self.gestureMapValue:
+			gestureSource, gestureMain = inputCore.getDisplayTextForGestureIdentifier(gestureIdentifier)
+			actionStr = self.markerManager.getActions()[self.gestureMapValue[gestureIdentifier]]
+			self.gesturesList.Append("%s = %s" % (gestureMain, actionStr), gestureIdentifier)
+			if gestureIdentifier == newGestureIdentifier:
+				sel = i
+			i += 1
+		if len(self.gestureMapValue) > 0:
+			self.gesturesList.SetSelection(sel)
+		
+		if self.gesturesList.Selection < 0:
+			self.deleteButton.Enabled = False
+		else:
+			self.deleteButton.Enabled = True
+		
+		self.gesturesList.SetFocus()
+		
 	def initData(self):
-		print("INIT")
+		self.checkVisibility()
+		self.markerManager = globalContext["webModule"].markerManager
+		self.addButton.Bind(wx.EVT_BUTTON, self.onAddGesture)
+		
+		actionsDict = self.markerManager.getActions()
+		self.actionList.Clear()
+		# Translators: No action choice
+		self.actionList.Append(pgettext("webAccess.action", "No action"), "")
+		for action in actionsDict:
+			self.actionList.Append(actionsDict[action], action)
+			
+		if newRule:
+			self.gestureMapValue = {}
+			self.actionList.SetSelection(0)
+		else:
+			self.gestureMapValue = globalRule.get("gestures", {}).copy()
+			self.actionList.SetSelection(
+				self.markerManager.getActions().keys().index(
+					globalRule.get("autoAction", "")
+				) + 1  # Empty entry at index 0
+				if "autoAction" in globalRule.keys() else 0
+			)
+		self.updateGesturesList(None)
+		
+	def checkVisibility(self):
+		ruleType = globalRule.get("type")
+		if ruleType in (ruleTypes.ZONE, ruleTypes.MARKER):
+			self.noActionsTxt.Show(False)
+			self.mainGridSizer.ShowItems(True)
+		else:
+			self.noActionsTxt.Show(True)
+			self.mainGridSizer.ShowItems(False)
 		
 	def onSave(self):
-		# todo: save real data
-		print("SAVE")
+		ruleType = globalRule.get("type")
+		if ruleType in (ruleTypes.ZONE, ruleTypes.MARKER):
+			globalRule["gestures"] = self.gestureMapValue
+			autoAction = self.actionList.GetClientData(self.actionList.Selection)
+			setIfNotEmpty(globalRule, "autoAction", autoAction)
+		else:
+			if globalRule.get("gestures"):
+				del globalRule["gestures"]
+			if globalRule.get("autoAction"):
+				del globalRule["autoAction"]
+
+
+class PropertiesPanel(SettingsPanel):
+	# Translators: This is the label for the rule dialog's properties panel.
+	title = _("Properties")
+	
+	# The semi-column is part of the labels because some localizations
+	# (ie. French) require it to be prepended with one space.
+	FIELDS = OrderedDict((
+		# Translator: Multiple results checkbox label for the rule dialog's properties panel.
+		("multiple", pgettext("webAccess.ruleProperties", u"&Multiple results")),
+		# Translator: Activate form mode checkbox label for the rule dialog's properties panel.
+		("formMode", pgettext("webAccess.ruleProperties", u"Activate &form mode")),
+		# Translator: Skip page down checkbox label for the rule dialog's properties panel.
+		("skip", pgettext("webAccess.ruleProperties", u"S&kip with Page Down")),
+		# Translator: Speak rule name checkbox label for the rule dialog's properties panel.
+		("sayName", pgettext("webAccess.ruleProperties", u"&Speak rule name")),
+		# Translator: Custom name input label for the rule dialog's properties panel.
+		("customName", pgettext("webAccess.ruleProperties", u"Custom &name:")),
+		# Label depends on rule type)
+		("customValue", None),
+		# Translator: Transform select label for the rule dialog's properties panel.
+		("mutation", pgettext("webAccess.ruleProperties", u"&Transform:")),
+	))
+	
+	RULE_TYPE_FIELDS = OrderedDict((
+		(ruleTypes.PAGE_TITLE_1, ("customValue",)),
+		(ruleTypes.PAGE_TITLE_2, ("customValue",)),
+		(ruleTypes.ZONE, ("formMode", "skip", "sayName", "customName", "customValue", "mutation")),
+		(ruleTypes.MARKER, ("multiple", "formMode", "skip", "sayName", "customName", "customValue", "mutation")),
+	))
+	
+	def strToBool(self, str):
+		if str == "True":
+			return True
+		if str == "False":
+			return False
+		raise ValueError("Cannot covert {} to a bool".format(str))
+	
+	@classmethod
+	def getAltFieldLabel(cls, ruleType):
+		if ruleType in (ruleTypes.PAGE_TITLE_1, ruleTypes.PAGE_TITLE_2):
+			# Translator: Custom page title input label for the rule dialog's properties panel.
+			return pgettext("webAccess.ruleProperties", u"Custom page &title:")
+		elif ruleType in (ruleTypes.ZONE, ruleTypes.MARKER):
+			# Translator: Custom message input label for the rule dialog's properties panel.
+			return pgettext("webAccess.ruleProperties", u"Custom messa&ge:")
+		return ""
+	
+	def makeSettings(self, settingsSizer):
+		marginSizer = wx.BoxSizer(wx.HORIZONTAL)
+		mainSizer = wx.BoxSizer(wx.VERTICAL)
+		marginSizer.AddSpacer(10)
+		marginSizer.Add(mainSizer)
+		settingsSizer.Add(marginSizer, flag=wx.EXPAND, proportion=1)
+		
+		self.mainGridSizer = wx.GridBagSizer(vgap=5, hgap=10)
+		mainSizer.Add(self.mainGridSizer)
+		
+		self.multipleProperty = wx.CheckBox(self, label=self.FIELDS["multiple"])
+		self.formModeProperty = wx.CheckBox(self, label=self.FIELDS["formMode"])
+		self.skipProperty = wx.CheckBox(self, label=self.FIELDS["skip"])
+		self.sayNameProperty = wx.CheckBox(self, label=self.FIELDS["sayName"])
+		self.customNameLabel = wx.StaticText(self, label=self.FIELDS["customName"])
+		self.customNameProperty = wx.TextCtrl(self, size=(350, -1))
+		self.customValueLabel = wx.StaticText(self, label=self.FIELDS["customValue"] or "")
+		self.customValueProperty = wx.TextCtrl(self, size=(350, -1))
+		self.mutationLabel = wx.StaticText(self, label=self.FIELDS["mutation"])
+		self.mutationProperty = wx.ComboBox(self, style=wx.CB_READONLY)
+		# Translator: Text showed when the selected type doesn't have properties available
+		self.noPropertiesText = wx.StaticText(self, label=_("No properties available for the selected rule type"))
+		
+		self.initData()
+		
+	def checkVisibility(self):
+		ruleType = globalRule.get("type", "")
+		fields = self.RULE_TYPE_FIELDS.get(ruleType, {})
+		self.multipleProperty.Show("multiple" in fields)
+		self.formModeProperty.Show("formMode" in fields)
+		self.skipProperty.Show("skip" in fields)
+		self.sayNameProperty.Show("sayName" in fields)
+		self.customNameLabel.Show("customName" in fields)
+		self.customNameProperty.Show("customName" in fields)
+		self.customValueLabel.Show("customValue" in fields)
+		self.customValueProperty.Show("customValue" in fields)
+		self.mutationLabel.Show("mutation" in fields)
+		self.mutationProperty.Show("mutation" in fields)
+		self.noPropertiesText.Show(not bool(fields))
+			
+		if "mutation" in fields:
+			# Translators: The label when there is no control mutation.
+			self.mutationProperty.Append(pgettext("webAccess.controlMutation", "<None>"), "")
+			for id_ in MUTATIONS_BY_RULE_TYPE.get(ruleType, []):
+				label = mutationLabels.get(id_)
+				if label is None:
+					log.error("No label for mutation id: {}".format(id_))
+					label = id_
+				self.mutationProperty.Append(label, id_)
+			
+		self.mainGridSizer.Clear()
+		if not bool(fields):
+			self.mainGridSizer.Add(self.noPropertiesText, (0,0))
+			return
+		self.customValueLabel.Label = self.getAltFieldLabel(ruleType)
+		if ruleType == ruleTypes.PAGE_TITLE_1 or ruleType == ruleTypes.PAGE_TITLE_2:
+			self.mainGridSizer.AddMany([
+				(self.customValueLabel, (0,0), (1,2)),
+				(self.customValueProperty, (1,0), (1,2))
+				])
+			return
+		if ruleType == ruleTypes.ZONE:	
+			self.mainGridSizer.AddMany([
+				(self.formModeProperty, (0,0)), 
+				(self.skipProperty, (0,1)),
+				(self.sayNameProperty, (1,0)),
+				(10, 8, (2,0), (1,2)),
+				(self.customNameLabel, (3,0), (1,2)),
+				(self.customNameProperty, (4,0), (1,2), wx.EXPAND),
+				(10, 8, (5,0), (1,2)),
+				(self.customValueLabel, (6,0), (1,2)),
+				(self.customValueProperty, (7,0), (1,2), wx.EXPAND),
+				(10, 8, (8,0), (1,2)),
+				(self.mutationLabel, (9,0), (1,2)),
+				(self.mutationProperty, (10,0), (1,2), wx.EXPAND),
+				])
+			return
+		if ruleType == ruleTypes.MARKER:
+			self.mainGridSizer.AddMany([
+				(self.multipleProperty, (0,0)),
+				(self.formModeProperty, (0,1)), 
+				(self.skipProperty, (1,0)),
+				(self.sayNameProperty, (1,1)),
+				(10, 8, (2,0), (1,2)),
+				(self.customNameLabel, (3,0), (1,2)),
+				(self.customNameProperty, (4,0), (1,2), wx.EXPAND),
+				(10, 8, (5,0), (1,2)),
+				(self.customValueLabel, (6,0), (1,2)),
+				(self.customValueProperty, (7,0), (1,2), wx.EXPAND),
+				(10, 8, (8,0), (1,2)),
+				(self.mutationLabel, (9,0), (1,2)),
+				(self.mutationProperty, (10,0), (1,2), wx.EXPAND),
+				])
+			return
+			
+	
+	def initData(self):
+		self.checkVisibility()
+		ruleType = globalRule.get("type", "")
+		self.multipleProperty.Value = self.strToBool(globalRule["multiple"]) if globalRule.get("multiple") else False
+		self.formModeProperty.Value = self.strToBool(globalRule["formMode"]) if globalRule.get("formMode") else False
+		self.skipProperty.Value = self.strToBool(globalRule["skip"]) if globalRule.get("skip") else False
+		self.sayNameProperty.Value = self.strToBool(globalRule["sayName"]) if globalRule.get("sayName") else True
+		self.customNameProperty.Value = globalRule.get("customName", "")
+		self.customValueLabel.Label = self.getAltFieldLabel(ruleType)
+		self.customValueProperty.Value = globalRule.get("customValue", "")
+		
+		if globalRule.get("mutation"):
+			for index in range(1, self.mutationProperty.Count + 1):
+				id_ = self.mutationProperty.GetClientData(index)
+				if id_ == globalRule["mutation"]:
+					break
+			else:
+				# Allow to bypass mutation choice by rule type
+				label = mutationLabels.get(id_)
+				if label is None:
+					log.error("No label for mutation id: {}".format(id_))
+					label = id_
+				self.mutationProperty.Append(label, id_)
+				index += 1
+		else:
+			index = 0
+		self.mutationProperty.SetSelection(index)
+		
+	def onSave(self):
+		setIfNotEmpty(globalRule, "multiple", str(self.multipleProperty.Value))
+		setIfNotEmpty(globalRule, "formMode", str(self.formModeProperty.Value))
+		setIfNotEmpty(globalRule, "skip", str(self.skipProperty.Value))
+		setIfNotEmpty(globalRule, "sayName", str(self.sayNameProperty.Value))
+		setIfNotEmpty(globalRule, "customName", self.customNameProperty.Value)
+		setIfNotEmpty(globalRule, "customValue", self.customValueProperty.Value)
+		if self.mutationProperty.Selection > 0:
+			globalRule["mutation"] = self.mutationProperty.GetClientData(self.mutationProperty.Selection)
+		
+		ruleType = globalRule.get("type", "")
+		showedFields = self.RULE_TYPE_FIELDS.get(ruleType, {})
+		for field in self.FIELDS.keys():
+			if field not in showedFields and globalRule.get(field):
+				del globalRule[field]
 
 
 class CriteriaPanel(SettingsPanel):
@@ -77,18 +376,20 @@ class CriteriaPanel(SettingsPanel):
 		mainGridSizer = wx.FlexGridSizer(rows=4, cols=2, hgap=10, vgap=5)
 		mainSizer.Add(mainGridSizer)
 
-		# Criteria sets
+		# Translators: Label for the box containing the criterias by sequence order in the criteria panel
 		criteriaSetsLabel = wx.StaticText(self, label=_("&Criteria sets by sequence order"))
 		self.criteriaSetsList = wx.ListBox(self)
 		self.criteriaSetsList.Bind(wx.EVT_LISTBOX, self.onCriteriaChange)
 
-		# Criteria summary
+		# Translators: Label for the criteria's summary readonly input
 		criteriaSummaryLabel = wx.StaticText(self, label=_("Criteria &summary"))
 		self.criteriaSummary = wx.TextCtrl(self, size=(220, 100), style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2)
 
-		# Buttons
+		# Translators: New criteria button label
 		self.newButton = wx.Button(self, label=_("&New"))
+		# Translators: Edit criteria button label
 		self.editButton = wx.Button(self, label=_("&Edit"))
+		# Translators: Delete criteria button label
 		self.deleteButton = wx.Button(self, label=_("&Delete"))
 
 		buttonSizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -116,30 +417,14 @@ class CriteriaPanel(SettingsPanel):
 		self.editButton.Bind(wx.EVT_BUTTON, self.onEditCriteriaBtn)
 		self.deleteButton.Bind(wx.EVT_BUTTON, self.onDeleteCriteriaBtn)
 
-		if newRule:
+		if newRule or not globalRule.get("criterias"):
 			self.criteriaSetsList.Clear()
 			self.criteriaSummary.Value = ""
 			self.editButton.Disable()
 			self.deleteButton.Disable()
 
-		# todo: Fake data, implement real way to get data
 		else:
-			criteria1 = {
-				'name': "mon super critere",
-				'notes': "Des notes partout sur mon super critere"
-				}
-			criteria2 = {
-				'name': "mon super critere 2",
-				'notes': "Des notes et des notes"
-				}
-			criteria3 = {
-				'notes': "Des notes",
-				'contextPageTitle': "Titre page",
-				'contextPageType': "type page"
-				}
-			self.criterias.append(criteria1)
-			self.criterias.append(criteria2)
-			self.criterias.append(criteria3)
+			self.criterias = globalRule["criterias"]
 			for criteria in self.criterias:
 				self.criteriaSetsList.Append(self.getCriteriaName(criteria))
 			self.criteriaSetsList.SetSelection(0)
@@ -202,6 +487,7 @@ class CriteriaPanel(SettingsPanel):
 		gui.mainFrame.postPopup()
 		
 	def onDeleteCriteriaBtn(self, evt):
+		# Translators: Confirmation message when deleting a criteria
 		with wx.GenericMessageDialog(self, _("Are you sure you want to delete this criteria ?")) as dlg:
 			if dlg.ShowModal() == wx.ID_OK:
 				selectedCriteria = self.criterias[self.criteriaSetsList.Selection]
@@ -224,8 +510,10 @@ class CriteriaPanel(SettingsPanel):
 		self.onCriteriaChange(None)	
 	
 	def onSave(self):
-		# todo: save real data
-		print("SAVE")
+		if self.criterias:
+			globalRule["criterias"] = self.criterias
+		elif globalRule.get("criterias"):
+			 del globalRule["criterias"]
 
 
 class GeneralPanel(SettingsPanel):
@@ -247,30 +535,31 @@ class GeneralPanel(SettingsPanel):
 		typeChoices = []
 		for key, label in ruleTypes.ruleTypeLabels.items():
 			typeChoices.append(label)
-		# Translators: This is the label of the rule type choice list.
+		# Translators: Label of the rule type choice list.
 		ruleTypeLabel = wx.StaticText(self, label=_("Rule &type"))
 		self.ruleType = wx.Choice(self, choices=typeChoices)
 		self.ruleType.Bind(wx.EVT_CHOICE, self.onTypeChange)
+		# todo: change tooltip's text
+		# Translators: Tooltip for rule type choice list.
+		self.ruleType.SetToolTip(_("TOOLTIP EXEMPLE"))
 		
-		# Translators: This is the label of the rule name input.
+		# Translators: Label of the rule name input.
 		ruleNameLabel = wx.StaticText(self, label=_("Rule &name"))
 		self.ruleName = wx.TextCtrl(self)
 
-		# Translators: This is the label of the rule documentation input.
+		# Translators: Label of the rule documentation input.
 		userDocLabel = wx.StaticText(self, label=_("User &documentation"))
 		self.ruleDocumentation = wx.TextCtrl(self, size=(400, 100), style=wx.TE_MULTILINE)
 
-		# Translators: This is the label of the rule summary.
+		# Translators: Label of the rule summary.
 		summaryLabel = wx.StaticText(self, label=_("&Summary"))
 		self.ruleSummary = wx.TextCtrl(self, size=(400, 100), style=wx.TE_MULTILINE | wx.TE_READONLY)
 
 		gridBagSizer.Add(ruleTypeLabel, pos=(0,0), flag=wx.ALIGN_CENTER_VERTICAL)
 		gridBagSizer.Add(self.ruleType, pos=(0,1), flag=wx.EXPAND)
-
 		gridBagSizer.Add(5, 5, pos=(1,0), span=(1,2))
 		gridBagSizer.Add(ruleNameLabel, pos=(2,0), flag=wx.ALIGN_CENTER_VERTICAL)
 		gridBagSizer.Add(self.ruleName, pos=(2,1), flag=wx.EXPAND)
-
 		gridBagSizer.Add(5, 5, pos=(3,0), span=(1,2))
 		gridBagSizer.Add(userDocLabel, pos=(4,0), span=(1,2))
 		gridBagSizer.Add(self.ruleDocumentation, pos=(5,0), span=(1,2), flag=wx.EXPAND)
@@ -278,7 +567,6 @@ class GeneralPanel(SettingsPanel):
 		staticLine = wx.StaticLine(self)
 		gridBagSizer.Add(5, 5, pos=(6,0), span=(1,2))
 		gridBagSizer.Add(staticLine, pos=(7,0), span=(1,2), flag=wx.EXPAND)
-
 		gridBagSizer.Add(5, 5, pos=(8,0), span=(1,2))
 		gridBagSizer.Add(summaryLabel, pos=(9,0))
 		gridBagSizer.Add(self.ruleSummary, pos=(10,0), span=(1,2), flag=wx.EXPAND)
@@ -314,6 +602,7 @@ class GeneralPanel(SettingsPanel):
 		# Type is required
 		if not self.ruleType.Selection >= 0:
 			gui.messageBox(
+				# Translators: Error message when no type is chosen before saving the rule
 				message=_("You must choose a type for this rule"),
 				caption=_("Error"),
 				style=wx.OK | wx.ICON_ERROR,
@@ -328,6 +617,7 @@ class GeneralPanel(SettingsPanel):
 		# Name is required
 		if not self.ruleName.Value.strip():
 			gui.messageBox(
+				# Translators: Error message when no name is entered before saving the rule
 				message=_("You must choose a name for this rule"),
 				caption=_("Error"),
 				style=wx.OK | wx.ICON_ERROR,
@@ -338,32 +628,22 @@ class GeneralPanel(SettingsPanel):
 			return
 		else:
 			globalRule["name"] = self.ruleName.Value
-		
-		globalRule["comment"] = self.ruleDocumentation.Value
+			
+		setIfNotEmpty(globalRule, "comment", self.ruleDocumentation.Value)
 
 
 class RuleEditorDialog(MultiCategorySettingsDialog):
 
-	# Translators: This is the label for the WebAccess settings dialog.
+	# Translators: This is the label for the WebAccess rule settings dialog.
 	title = _("WebAccess Rule editor")
-	categoryClasses = [GeneralPanel, CriteriaPanel, PropertiesPanel]
+	categoryClasses = [GeneralPanel, CriteriaPanel, ActionsPanel, PropertiesPanel]
 	INITIAL_SIZE = (750, 520)
-	MIN_SIZE = (470, 240)
 
 	def __init__(self, parent, initialCategory=None, context=None, new=False):
 		global newRule
-		newRule = new
-		
-		self.initialCategory = initialCategory
-		self.currentCategory = None
-		self.setPostInitFocus = None
-		self.catIdToInstanceMap = {}
+		newRule = new	
 		self.initData(context)
-		super(MultiCategorySettingsDialog, self).__init__(parent, resizeable=True)
-
-		self.SetMinSize(self.scaleSize(self.MIN_SIZE))
-		self.SetSize(self.scaleSize(self.INITIAL_SIZE))
-		self.CentreOnScreen()
+		super(RuleEditorDialog, self).__init__(parent, initialCategory=initialCategory)
 
 	def initData(self, context):
 		global globalRule, globalContext
@@ -389,6 +669,17 @@ class RuleEditorDialog(MultiCategorySettingsDialog):
 			panel.onSave()
 			if panel.isValid() is False:
 				raise ValueError("Validation for %s blocked saving settings" % panel.__class__.__name__)
+			
+	def onCategoryChange(self, evt):
+		currentCat = self.currentCategory
+		newIndex = evt.GetIndex()
+		if not currentCat or newIndex != self.categoryClasses.index(currentCat.__class__):
+			panelClassName = type(self.catIdToInstanceMap.get(newIndex)).__name__
+			if  panelClassName in ("ActionsPanel", "PropertiesPanel"):
+				self.catIdToInstanceMap.get(newIndex).checkVisibility()
+			self._doCategoryChange(newIndex)
+		else:
+			evt.Skip()
 
 	def onOk(self, evt):
 		try:
@@ -397,24 +688,23 @@ class RuleEditorDialog(MultiCategorySettingsDialog):
 			log.debugWarning("", exc_info=True)
 			return
 
-		for rule in self.markerManager.getQueries():
-			if globalRule["name"] == rule.name and newRule:
-				gui.messageBox(
-					message=_("There already is another rule with the same name."),
-					caption=_("Error"),
-					style=wx.ICON_ERROR | wx.OK | wx.CANCEL,
-					parent=self
-				)
-				return
+		if newRule:
+			for rule in self.markerManager.getQueries():
+				if globalRule["name"] == rule.name:
+					gui.messageBox(
+						# Translators: Error message when another rule with the same name already exists
+						message=_("There already is another rule with the same name."),
+						caption=_("Error"),
+						style=wx.ICON_ERROR | wx.OK | wx.CANCEL,
+						parent=self
+					)
+					return
 
-		if not newRule:
+		else:
 			self.markerManager.removeQuery(self.rule)
 		savedRule = ruleHandler.VirtualMarkerQuery(self.markerManager, globalRule)
 		self.markerManager.addQuery(savedRule)
-		webModuleHandler.update(
-			webModule=self.context["webModule"],
-			focus=self.context["focusObject"]
-		)
+		webModuleHandler.update(webModule=self.context["webModule"], focus=self.context["focusObject"])
 
 		for panel in self.catIdToInstanceMap.values():
 			panel.Destroy()

@@ -7,6 +7,7 @@ from collections import OrderedDict
 from ..ruleHandler import ruleTypes
 from ..gui import ruleEditor
 import controlTypes
+from logHandler import log
 
 try:
 	from gui.settingsDialogs import (
@@ -83,6 +84,14 @@ def translateRoleIdToLbl(expr):
 			return value
 	return translateExprValues(expr, translate)
 
+def translateStatesLblToId(expr):
+	def translate(value):
+		for key, candidate in iteritems(controlTypes.stateLabels):
+			if candidate == value:
+				return text_type(key)
+		return value
+	return translateExprValues(expr, translate)
+
 def translateStatesIdToLbl(expr):
 	def translate(value):
 		try:
@@ -113,29 +122,29 @@ class OverridesPanes(SettingsPanel):
 
 
 class CriteriaPanel(SettingsPanel):
-	# Translators: This is the label for the criteria's panel.
+	# Translators: This is the label for the criteria panel.
 	title = _("Criteria")
 	
 	# The semi-column is part of the labels because some localizations
 	# (ie. French) require it to be prepended with one space.
 	FIELDS = OrderedDict((
-		# Translator: Field label on the RuleCriteriaEditor dialog.
+		# Translator: Text criteria field label on the rule's criteria panel dialog.
 		("text", pgettext("webAccess.ruleCriteria", u"&Text")),
-		# Translator: Field label on the RuleCriteriaEditor dialog.
+		# Translator: Role criteria field label on the rule's criteria panel dialog.
 		("role", pgettext("webAccess.ruleCriteria", u"&Role")),
-		# Translator: Field label on the RuleCriteriaEditor dialog.
+		# Translator: Tag criteria field label on the rule's criteria panel dialog.
 		("tag", pgettext("webAccess.ruleCriteria", u"T&ag")),
-		# Translator: Field label on the RuleCriteriaEditor dialog.
+		# Translator: ID criteria field label on the rule's criteria panel dialog.
 		("id", pgettext("webAccess.ruleCriteria", u"&ID")),
-		# Translator: Field label on the RuleCriteriaEditor dialog.
+		# Translator: Class criteria field label on the rule's criteria panel dialog.
 		("className", pgettext("webAccess.ruleCriteria", u"&Class")),
-		# Translator: Field label on the RuleCriteriaEditor dialog.
+		# Translator: States criteria field label on the rule's criteria panel dialog.
 		("states", pgettext("webAccess.ruleCriteria", u"&States")),
-		# Translator: Field label on the RuleCriteriaEditor dialog.
+		# Translator: Images source criteria field label on the rule's criteria panel dialog.
 		("src", pgettext("webAccess.ruleCriteria", u"Ima&ge source")),
-		# Translator: Field label on the RuleCriteriaEditor dialog.
+		# Translator: Relative path criteria field label on the rule's criteria panel dialog.
 		("relativePath", pgettext("webAccess.ruleCriteria", u"R&elative path")),
-		# Translator: Field label on the RuleCriteriaEditor dialog.
+		# Translator: Index criteria field label on the rule's criteria panel dialog.
 		("index", pgettext("webAccess.ruleCriteria", u"Inde&x")),
 	))
 	
@@ -153,7 +162,7 @@ class CriteriaPanel(SettingsPanel):
 		if parts:
 			return "\n".join(parts)
 		else:
-			# Translators: Fail-back criteria summary in RuleEditor dialog.
+			# Translators: Fail-back criteria summary in rule's criteria panel dialog.
 			return _("No criteria")
 	
 	def makeSettings(self, settingsSizer):
@@ -267,17 +276,18 @@ class CriteriaPanel(SettingsPanel):
 		
 	def onSave(self):
 		self.isValidData = True
-		globalCriteria["text"] = self.textContext.Value.strip()
-		globalCriteria["tag"] = self.tagContext.Value.strip()
-		globalCriteria["id"] = self.idContext.Value.strip()
-		globalCriteria["className"] = self.classNameContext.Value.strip()
-		globalCriteria["src"] = self.srcContext.Value.strip()
-		globalCriteria["relativePath"] = self.relativePathContext.Value.strip()
+		ruleEditor.setIfNotEmpty(globalCriteria, "text", self.textContext.Value)
+		ruleEditor.setIfNotEmpty(globalCriteria, "tag", self.tagContext.Value)
+		ruleEditor.setIfNotEmpty(globalCriteria, "id", self.idContext.Value)
+		ruleEditor.setIfNotEmpty(globalCriteria, "className", self.classNameContext.Value)
+		ruleEditor.setIfNotEmpty(globalCriteria, "src", self.srcContext.Value)
+		ruleEditor.setIfNotEmpty(globalCriteria, "relativePath", self.relativePathContext.Value)
 		
 		roleLblExpr = self.roleContext.Value
 		if roleLblExpr:
 			if not EXPR.match(roleLblExpr):
 				gui.messageBox(
+					# Translators: Error message when the field doesn't meet the required syntax
 					message=(_('Syntax error in the field "{field}"'))
 							.format(field=stripAccelAndColon(self.FIELDS["role"])),
 					caption=_("Error"),
@@ -290,6 +300,7 @@ class CriteriaPanel(SettingsPanel):
 			roleIdExpr = translateRoleLblToId(roleLblExpr)
 			if not EXPR_INT.match(roleIdExpr):
 				gui.messageBox(
+					# Translators: Error message when the field doesn't match any known identifier
 					message=(_('Unknown identifier in the field "{field}"'))
 							.format(field=stripAccelAndColon(self.FIELDS["role"])),
 					caption=_("Error"),
@@ -305,6 +316,7 @@ class CriteriaPanel(SettingsPanel):
 		if statesLblExpr:
 			if not EXPR.match(statesLblExpr):
 				gui.messageBox(
+					# Translators: Error message when the field doesn't meet the required syntax
 					message=(_('Syntax error in the field "{field}"'))
 							.format(field=stripAccelAndColon(self.FIELDS["states"])),
 					caption=_("Error"),
@@ -317,6 +329,7 @@ class CriteriaPanel(SettingsPanel):
 			statesIdExpr = translateStatesLblToId(statesLblExpr)
 			if not EXPR_INT.match(statesIdExpr):
 				gui.messageBox(
+					# Translators: Error message when the field doesn't match any known identifier
 					message=(_('Unknown identifier in the field "{field}"'))
 							.format(field=stripAccelAndColon(self.FIELDS["states"])),
 					caption=_("Error"),
@@ -338,6 +351,7 @@ class CriteriaPanel(SettingsPanel):
 				globalCriteria["index"] = index
 			else:
 				gui.messageBox(
+					# Translators: Error message when the index is not positive
 					message=_("Index, if set, must be a positive integer."),
 					caption=_("Error"),
 					style=wx.OK | wx.ICON_ERROR,
@@ -355,11 +369,11 @@ class ContextPanel(SettingsPanel):
 	# The semi-column is part of the labels because some localizations
 	# (ie. French) require it to be prepended with one space.
 	FIELDS = OrderedDict((
-		# Translator: Field label on the RuleContextEditor dialog.
+		# Translator: Page title field label on the criteria set's context panel.
 		("contextPageTitle", pgettext("webAccess.ruleContext", u"Page &title")),
-		# Translator: Field label on the RuleContextEditor dialog.
+		# Translator: Page type field label on the criteria set's context panel.
 		("contextPageType", pgettext("webAccess.ruleContext", u"Page t&ype")),
-		# Translator: Field label on the RuleContextEditor dialog.
+		# Translator: Parent element field label on the criteria set's context panel.
 		("contextParent", pgettext("webAccess.ruleContext", u"&Parent element")),
 	))
 	
@@ -372,7 +386,7 @@ class ContextPanel(SettingsPanel):
 		if parts:
 			return "\n".join(parts)
 		else:
-			# Translators: Fail-back context summary in RuleEditor dialog.
+			# Translators: Fail-back context summary in criteria set's context panel.
 			return _("Global - Applies to the whole web module.")
 	
 	def makeSettings(self, settingsSizer):
@@ -404,6 +418,7 @@ class ContextPanel(SettingsPanel):
 
 	def initData(self):
 		markerManager = ruleEditor.globalContext["webModule"].markerManager
+		node = markerManager.nodeManager.getCaretNode()
 		
 		showPageTitle = ruleEditor.globalRule.get("type", "") != ruleTypes.PAGE_TITLE_1
 		if showPageTitle:
@@ -443,12 +458,15 @@ class GeneralPanel(SettingsPanel):
 		marginSizer.Add(mainSizer)
 		settingsSizer.Add(marginSizer, flag=wx.EXPAND, proportion=1)
 		
+		# Translators: Name field label of the criteria dialog's general panel.
 		nameLabel = wx.StaticText(self, label=_("&Name"))
 		self.criteriaName = wx.TextCtrl(self)
 		
+		# Translators: Sequence order field label of the criteria dialog's general panel.
 		sequenceLabel = wx.StaticText(self, label=_("&Sequence order"))
 		self.criteriaOrder = wx.Choice(self)
 
+		# Translators: Technical notes field label of the criteria dialog's general panel.
 		notesLabel = wx.StaticText(self, label=_("Technical &notes"))
 		self.criteriaNotes = wx.TextCtrl(self, size=(300, 200), style=wx.TE_MULTILINE)
 		
@@ -485,34 +503,22 @@ class GeneralPanel(SettingsPanel):
 
 class CriteriaSetEditorDialog(MultiCategorySettingsDialog):
 
-	# Translators: This is the label for the WebAccess settings dialog.
+	# Translators: This is the label for the WebAccess criteria settings dialog.
 	title = _("WebAccess Criteria set editor")
 	categoryClasses = [GeneralPanel, ContextPanel, CriteriaPanel]
 	INITIAL_SIZE = (800, 480)
-	MIN_SIZE = (470, 240)
 
 	def __init__(self, parent, criterias, selectedCriteria=None):
 		global globalCriteria
 		global globalNbCriterias
 		global globalSelectedCriteria
 		global globalNewCriteria
-		if selectedCriteria is not None:
-			globalCriteria = criterias[selectedCriteria]
-			globalSelectedCriteria = selectedCriteria
-			globalNewCriteria = False
-		else:
-			globalCriteria = dict()
+		globalCriteria = dict() if selectedCriteria is None else criterias[selectedCriteria]
+		globalNewCriteria = selectedCriteria is None
+		globalSelectedCriteria = selectedCriteria
 		globalNbCriterias = len(criterias)
 		
-		self.initialCategory = None
-		self.currentCategory = None
-		self.setPostInitFocus = None
-		self.catIdToInstanceMap = {}
-		super(MultiCategorySettingsDialog, self).__init__(parent)
-
-		self.SetMinSize(self.scaleSize(self.MIN_SIZE))
-		self.SetSize(self.scaleSize(self.INITIAL_SIZE))
-		self.CentreOnScreen()
+		super(CriteriaSetEditorDialog, self).__init__(parent, initialCategory=None)
 
 	def _doSave(self):
 		for panel in self.catIdToInstanceMap.values():
