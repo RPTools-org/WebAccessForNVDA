@@ -1,1459 +1,714 @@
-# globalPlugins/webAccess/gui/ruleEditor.py
 # -*- coding: utf-8 -*-
 
-# This file is part of Web Access for NVDA.
-# Copyright (C) 2015-2019 Accessolutions (http://accessolutions.fr)
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-# See the file COPYING.txt at the root of this distribution for more details.
-
-# Get ready for Python 3
-from __future__ import absolute_import, division, print_function
-
-__version__ = "2019.07.19"
-__author__ = u"Frédéric Brugnot <f.brugnot@accessolutions.fr>"
-
-
-import re
 import wx
 
-import addonHandler
-from collections import OrderedDict
-import controlTypes
 import gui
 import inputCore
+from collections import OrderedDict
 from logHandler import log
 
 from .. import ruleHandler
 from ..ruleHandler import ruleTypes
+import controlTypes
+from .. import webModuleHandler
+
 from ..ruleHandler.controlMutation import (
 	MUTATIONS_BY_RULE_TYPE,
 	mutationLabels
 )
-from .. import webModuleHandler
 
 try:
-	from wx.lib.expando import ExpandoTextCtrl
+	from gui import guiHelper
 except ImportError:
-	# NVDA version < 2018.2
-	from .wx_lib_expando import ExpandoTextCtrl
+	from ..backports.nvda_2016_4 import gui_guiHelper as guiHelper
 
 try:
-	from six import iteritems, text_type
+	from gui.settingsDialogs import (
+		MultiCategorySettingsDialog,
+		SettingsPanel
+	)
 except ImportError:
-	# NVDA version < 2018.3
-	iteritems = dict.iteritems
-	text_type = unicode
-
-addonHandler.initTranslation()
-
+	from ..backports.nvda_2018_2.gui_settingsDialogs import (
+		MultiCategorySettingsDialog,
+		SettingsPanel
+	)
+	
+def setIfNotEmpty(dic, key, value):
+	if value and value.strip():
+		dic[key] = value
+		return
+	elif dic.get(key):
+		del dic[key]
 
 formModeRoles = [
 	controlTypes.ROLE_EDITABLETEXT,
 	controlTypes.ROLE_COMBOBOX,
 ]
 
+globalContext = None
+globalRule = None
+newRule = True
 
-LABEL_ACCEL = re.compile("&(?!&)")
-"""
-Compiled pattern used to strip accelerator key indicators from labels.
-"""
-
-EXPR = re.compile("^ *!? *[^!&|]+( *[&|] *!? *[^!&|]+)*$")
-"""
-Compiled pattern used to validate expressions.
-"""
-
-EXPR_INT = re.compile("^ *!? *[0-9]+( *[&|] *!? *[0-9]+)* *$")
-"""
-Compiled pattern used to validate expressions whose values are integers.
-"""
-
-EXPR_VALUE = re.compile("(([^!&| ])+( (?=[^!&|]))*)+")
-"""
-Compiled pattern used to capture values in expressions.
-"""
-
-def stripAccel(label):
-	return LABEL_ACCEL.sub("", label)
-
-def stripAccelAndColon(label):
-	return stripAccel(label).rstrip(":").rstrip()
-
-def setIfNotEmpty(dic, key, value):
-	if value and value.strip():
-		dic[key] = value
-
-
-def captureValues(expr):
-	"""
-	Yields value, startPos, endPos
-	"""
-	for match in EXPR_VALUE.finditer(expr):
-		span = match.span()
-		yield expr[span[0]:span[1]], span[0], span[1]
-
-
-def translateExprValues(expr, func):
-	buf = list(expr)
-	offset = 0
-	for src, start, end in captureValues(expr):
-		dest = text_type(func(src))
-		start += offset
-		end += offset
-		buf[start:end] = dest
-		offset += len(dest) - len(src)
-	return u"".join(buf)
-
-
-def translateRoleIdToLbl(expr):
-	def translate(value):
-		try:
-			return controlTypes.roleLabels[int(value)]
-		except (KeyError, ValueError):
-			return value
-	return translateExprValues(expr, translate)
-
-
-def translateRoleLblToId(expr):
-	def translate(value):
-		for key, candidate in iteritems(controlTypes.roleLabels):
-			if candidate == value:
-				return text_type(key)
-		return value
-	return translateExprValues(expr, translate)
-
-
-def getRoleLblForInt(role):
-	return controlTypes.roleLabels.get(role, "")
-
-
-def translateStatesIdToLbl(expr):
-	def translate(value):
-		try:
-			return controlTypes.stateLabels[int(value)]
-		except (KeyError, ValueError):
-			return value
-	return translateExprValues(expr, translate)
-
-
-def translateStatesLblToId(expr):
-	def translate(value):
-		for key, candidate in iteritems(controlTypes.stateLabels):
-			if candidate == value:
-				return text_type(key)
-		return value
-	return translateExprValues(expr, translate)
-
-
-def getStatesLblExprForSet(states):
-	return " & ".join((
-		controlTypes.stateLabels.get(state, state)
-		for state in states
-	))
-
-
-def safeDelete(dic, key):
-	try:
-		del dic[key]
-	except KeyError:
-		pass
-
-
-def updateAndDeleteMissing(keys, src, dest):
-	for key in keys:
-		if key in src:
-			dest[key] = src[key]
-		else:
-			safeDelete(dest, key)
-
-
-def updateOrDeleteIfEmpty(dic, key, value):
-	if value:
-		dic[key] = value
-	else:
-		safeDelete(dic, key)
-
-
-def show(context):
-	gui.mainFrame.prePopup()
-	with RuleEditor(gui.mainFrame) as dlg:
-		result = dlg.ShowModal(context)
-	gui.mainFrame.postPopup()
-	return result == wx.ID_OK
-
-
-class RuleContextEditor(wx.Dialog):
+class ActionsPanel(SettingsPanel):
+	# Translators: This is the label for the rule dialog's action panel.
+	title = _("Actions")
 	
-	# The semi-column is part of the labels because some localizations
-	# (ie. French) require it to be prepended with one space.
-	FIELDS = OrderedDict((
-		(
-			"contextPageTitle",
-			# Translator: Field label on the RuleContextEditor dialog.
-			pgettext("webAccess.ruleContext", u"Page &title:")
-		),
-		(
-			"contextPageType",
-			# Translator: Field label on the RuleContextEditor dialog.
-			pgettext("webAccess.ruleContext", u"Page t&ype:")
-		),
-		(
-			# Translator: Field label on the RuleContextEditor dialog.
-			"contextParent",
-			pgettext("webAccess.ruleContext", u"&Parent element:")
-		),
-		(
-			# Translator: Field label on the RuleContextEditor dialog.
-			"priority",
-			pgettext("webAccess.ruleContext", u"Pri&ority:")
-		),
-	))
-	
-	@classmethod
-	def getSummary(cls, data):
-		parts = []
-		for key, label in cls.FIELDS.items():
-			if key in data:
-				parts.append(u"{} {}".format(stripAccel(label), data[key]))
-		if parts:
-			return "\n".join(parts)
-		else:
-			# Translators: Fail-back context summary in RuleEditor dialog.
-			return _("Global - Applies to the whole web module.")
-	
-	def __init__(self, parent):
-		super(RuleContextEditor, self).__init__(
-			parent,
-			# Translator: The title for the RuleContextEditor dialog.
-			title=_("Rule Context"),
-			style=wx.DEFAULT_DIALOG_STYLE | wx.MAXIMIZE_BOX | wx.RESIZE_BORDER,
-		)
-		
+	def makeSettings(self, settingsSizer):
+		marginSizer = wx.BoxSizer(wx.HORIZONTAL)
 		mainSizer = wx.BoxSizer(wx.VERTICAL)
+		marginSizer.AddSpacer(10)
+		marginSizer.Add(mainSizer)
+		settingsSizer.Add(marginSizer, flag=wx.EXPAND, proportion=1)
 		
-		fgSizer = wx.FlexGridSizer(cols=2, vgap=8, hgap=8)
-		mainSizer.Add(fgSizer, proportion=1, flag=wx.EXPAND | wx.ALL, border=8)
+		# Translators: Text showed when the selected type doesn't have actions available
+		self.noActionsTxt = wx.StaticText(self, label=_("No actions available for the selected rule type."))
+		mainSizer.Add(self.noActionsTxt)
+		
+		self.mainGridSizer = wx.GridBagSizer(vgap=5, hgap=10)
+		mainSizer.Add(self.mainGridSizer)
+		
+		# Translators: Keyboard shortcut input label for the rule dialog's action panel.
+		gesturesLabel = wx.StaticText(self, label=_("&Keyboard shortcut"))
+		self.gesturesList = wx.ListBox(self)
 
-		item = self.pageTitleLabel = wx.StaticText(
-			self, label=self.FIELDS["contextPageTitle"]
-		)
-		item.Hide()  # Visibility depends on rule type
-		fgSizer.Add(item)
-		item = self.pageTitleCombo = wx.ComboBox(self)
-		item.Hide()  # Visibility depends on rule type
-		fgSizer.Add(item, flag=wx.EXPAND)
-		
-		item = wx.StaticText(self, label=self.FIELDS["contextPageType"])
-		fgSizer.Add(item)
-		item = self.pageTypeCombo = wx.ComboBox(self)
-		fgSizer.Add(item, flag=wx.EXPAND)
-		
-		item = wx.StaticText(self, label=self.FIELDS["contextParent"])
-		fgSizer.Add(item)
-		item = self.parentCombo = wx.ComboBox(self)
-		fgSizer.Add(item, flag=wx.EXPAND)
+		# Translators: Add a keyboard shortcut button label for the rule dialog's action panel.
+		self.addButton = wx.Button(self, label=_("Add a keyboard shortcut"))
+		# Translators: Delete a keyboard shortcut button label for the rule dialog's action panel.
+		self.deleteButton = wx.Button(self, label=_("Delete this shortcut"))
+		self.deleteButton.Bind(wx.EVT_BUTTON, self.onDeleteGesture)
 
-		item = wx.StaticText(self, label=self.FIELDS["priority"])
-		fgSizer.Add(item)
-		item = self.priorityText = wx.TextCtrl(self, size=(350, -1))
-		fgSizer.Add(item, flag=wx.EXPAND)
-
-		fgSizer.AddGrowableCol(1)
+		# Translators: Automatic action at rule detection input label for the rule dialog's action panel.
+		actionLabel = wx.StaticText(self, label=_("&Automatic action at rule detection"))
+		self.actionList = wx.ComboBox(self, style=wx.CB_READONLY)
 		
-		mainSizer.Add(
-			self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL),
-			flag=wx.EXPAND | wx.BOTTOM,
-			border=8
-		)
-		self.Bind(wx.EVT_BUTTON, self.onOk, id=wx.ID_OK)
-		self.SetSizerAndFit(mainSizer)
-	
-	def initData(self, context):
-		data = self.data = context["data"]["rule"]
-		markerManager = self.markerManager = context["webModule"].markerManager
-		node = markerManager.nodeManager.getCaretNode()
+		self.mainGridSizer.AddMany([
+				(gesturesLabel, (0,0), (1,2)),
+				(self.gesturesList, (1,0), (2,1), wx.EXPAND),
+				(self.addButton, (1,1), (1,1), wx.EXPAND),
+				(self.deleteButton, (2,1), (1,1), wx.EXPAND),
+				(5,5, (3,0)),
+				(actionLabel, (4,0), (1,2)),
+				(self.actionList, (5,0), (1,2), wx.EXPAND)
+			])
 		
-		showPageTitle = data["type"] != ruleTypes.PAGE_TITLE_1
-		if showPageTitle:
-			self.pageTitleCombo.Set([context["pageTitle"]])
-			self.pageTitleCombo.Value = data.get("contextPageTitle", "")
-		self.pageTitleLabel.Show(showPageTitle)
-		self.pageTitleCombo.Show(showPageTitle)
-			
-		self.pageTypeCombo.Set(markerManager.getPageTypes())
-		self.pageTypeCombo.Value = data.get("contextPageType", "")
+		self.initData()
 		
-		parents = []
-		for result in markerManager.getResults():
-			query = result.markerQuery
-			if (
-				query.type in (ruleTypes.PARENT, ruleTypes.ZONE)
-				and node in result.node
-			):
-				parents.insert(0, query.name)
-		self.parentCombo.Set(parents)
-		self.parentCombo.Value = data.get("contextParent", "")
+	def onAddGesture(self, evt):
+		from ..gui import shortcutDialog
+		shortcutDialog.markerManager = self.markerManager
+		if shortcutDialog.show():
+			self.gestureMapValue[shortcutDialog.resultShortcut] = shortcutDialog.resultActionData
+			self.updateGesturesList(shortcutDialog.resultShortcut)
+			self.gesturesList.SetFocus()
 		
-		self.priorityText.Value = str(data.get("priority", ""))
-	
-	def onOk(self, evt):
-		data = dict()
-		
-		setIfNotEmpty(data, "contextPageTitle", self.pageTitleCombo.Value)
-		setIfNotEmpty(data, "contextPageType", self.pageTypeCombo.Value)
-		setIfNotEmpty(data, "contextParent", self.parentCombo.Value)
-		
-		priority = self.priorityText.Value
-		if priority.strip():
-			try:
-				priority = int(priority)
-			except ValueError:
-				gui.messageBox(
-					message=_("Priority, if set, must be a positive integer."),
-					caption=_("Error"),
-					style=wx.OK | wx.ICON_ERROR,
-					parent=self
-				)
-				self.priorityText.SetFocus()
-				return
-			data["priority"] = priority
-		
-		updateAndDeleteMissing(self.FIELDS, data, self.data)
-
-		assert self.IsModal()
-		self.EndModal(wx.ID_OK)
-	
-	def ShowModal(self, context):
-		self.initData(context)
-		self.Fit()
-		self.Center(wx.BOTH | wx.CENTER_ON_SCREEN)
-		if self.pageTitleCombo.IsShown():
-			self.pageTitleCombo.SetFocus()
-		else:
-			self.pageTypeCombo.SetFocus()
-		return super(RuleContextEditor, self).ShowModal()
-
-
-class RuleCriteriaEditor(wx.Dialog):
-	
-	# The semi-column is part of the labels because some localizations
-	# (ie. French) require it to be prepended with one space.
-	FIELDS = OrderedDict((
-		# Translator: Field label on the RuleCriteriaEditor dialog.
-		("text", pgettext("webAccess.ruleCriteria", u"&Text:")),
-		# Translator: Field label on the RuleCriteriaEditor dialog.
-		("role", pgettext("webAccess.ruleCriteria", u"&Role:")),
-		# Translator: Field label on the RuleCriteriaEditor dialog.
-		("tag", pgettext("webAccess.ruleCriteria", u"T&ag:")),
-		# Translator: Field label on the RuleCriteriaEditor dialog.
-		("id", pgettext("webAccess.ruleCriteria", u"&ID:")),
-		# Translator: Field label on the RuleCriteriaEditor dialog.
-		("className", pgettext("webAccess.ruleCriteria", u"&Class:")),
-		# Translator: Field label on the RuleCriteriaEditor dialog.
-		("states", pgettext("webAccess.ruleCriteria", u"&States:")),
-		# Translator: Field label on the RuleCriteriaEditor dialog.
-		("src", pgettext("webAccess.ruleCriteria", u"Ima&ge source:")),
-		(
-			"relativePath",
-			# Translator: Field label on the RuleCriteriaEditor dialog.
-			pgettext("webAccess.ruleCriteria", u"R&elative path:")
-		),
-		# Translator: Field label on the RuleCriteriaEditor dialog.
-		("index", pgettext("webAccess.ruleCriteria", u"Inde&x:")),
-	))
-	
-	@classmethod
-	def getSummary(cls, data):
-		parts = []
-		for key, label in cls.FIELDS.items():
-			if key in data:
-				value = data[key]
-				if key == "role":
-					value = translateRoleIdToLbl(value)
-				elif key == "states":
-					value = translateStatesIdToLbl(value)
-				parts.append(u"{} {}".format(stripAccel(label), value))
-		if parts:
-			return "\n".join(parts)
-		else:
-			# Translators: Fail-back criteria summary in RuleEditor dialog.
-			return _("No criteria")
-	
-	def __init__(self, parent):
-		super(RuleCriteriaEditor, self).__init__(
-			parent,
-			# Translator: The title for the RuleContextEditor dialog.
-			title=_("Rule Criteria"),
-			style=wx.DEFAULT_DIALOG_STYLE | wx.MAXIMIZE_BOX | wx.RESIZE_BORDER,
-		)
-		
-		mainSizer = wx.BoxSizer(wx.VERTICAL)
-		
-		fgSizer = wx.FlexGridSizer(cols=2, vgap=8, hgap=8)
-		mainSizer.Add(fgSizer, proportion=1, flag=wx.EXPAND | wx.ALL, border=8)
-
-		item = wx.StaticText(self, label=self.FIELDS["text"])
-		fgSizer.Add(item)
-		item = self.searchText = wx.ComboBox(self)
-		fgSizer.Add(item, flag=wx.EXPAND)
-		
-		item = wx.StaticText(self, label=self.FIELDS["role"])
-		fgSizer.Add(item)
-		item = self.roleCombo = wx.ComboBox(self)
-		fgSizer.Add(item, flag=wx.EXPAND)
-		
-		item = wx.StaticText(self, label=self.FIELDS["tag"])
-		fgSizer.Add(item)
-		item = self.tagCombo = wx.ComboBox(self)
-		fgSizer.Add(item, flag=wx.EXPAND)
-		
-		item = wx.StaticText(self, label=self.FIELDS["id"])
-		fgSizer.Add(item)
-		item = self.idCombo = wx.ComboBox(self)
-		fgSizer.Add(item, flag=wx.EXPAND)
-		
-		item = wx.StaticText(self, label=self.FIELDS["className"])
-		fgSizer.Add(item)
-		item = self.classCombo = wx.ComboBox(self)
-		fgSizer.Add(item, flag=wx.EXPAND)
-		
-		item = wx.StaticText(self, label=self.FIELDS["states"])
-		fgSizer.Add(item)
-		item = self.statesCombo = wx.ComboBox(self)
-		fgSizer.Add(item, flag=wx.EXPAND)
-		
-		item = wx.StaticText(self, label=self.FIELDS["src"])
-		fgSizer.Add(item)
-		item = self.srcCombo = wx.ComboBox(self)
-		fgSizer.Add(item, flag=wx.EXPAND)
-		
-		item = wx.StaticText(self, label=self.FIELDS["relativePath"])
-		fgSizer.Add(item)
-		item = self.relativePathText = wx.TextCtrl(self)
-		fgSizer.Add(item, flag=wx.EXPAND)
-		
-		item = wx.StaticText(self, label=self.FIELDS["index"])
-		fgSizer.Add(item)
-		item = self.indexText = wx.TextCtrl(self)
-		fgSizer.Add(item, flag=wx.EXPAND)
-
-		fgSizer.AddGrowableCol(1)
-		
-		mainSizer.Add(
-			self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL),
-			flag=wx.EXPAND | wx.BOTTOM,
-			border=8
-		)
-		self.Bind(wx.EVT_BUTTON, self.onOk, id=wx.ID_OK)
-		self.SetSizerAndFit(mainSizer)
-	
-	def initData(self, context):
-		data = self.data = context["data"]["rule"]
-		markerManager = self.markerManager = context["webModule"].markerManager
-		node = markerManager.nodeManager.getCaretNode()
-
-		textNode = node
-		node = node.parent
-		t = textNode.text
-		if t == " ":
-			t = ""
-		textChoices = [t]
-		if node.previousTextNode is not None:
-			textChoices.append("<" + node.previousTextNode.text)
-		roleChoices = []
-		statesChoices = []
-		tagChoices = []
-		idChoices = []
-		classChoices = []
-		srcChoices = []
-		while node is not None:
-			roleChoices.append(getRoleLblForInt(node.role) or "")
-			tagChoices.append(node.tag or "")
-			idChoices.append(node.id or "")
-			classChoices.append(node.className or "")
-			statesChoices.append(getStatesLblExprForSet(node.states) or "")
-			srcChoices.append(node.src or "")
-			node = node.parent
-		
-		self.searchText.Set(textChoices)
-		self.roleCombo.Set(roleChoices)
-		self.tagCombo.Set(tagChoices)
-		self.idCombo.Set(idChoices)
-		self.classCombo.Set(classChoices)
-		self.statesCombo.Set(statesChoices)
-		self.srcCombo.Set(srcChoices)
-		
-		self.searchText.Value = data.get("text", "")
-		self.roleCombo.Value = translateRoleIdToLbl(data.get("role", ""))
-		self.tagCombo.Value = data.get("tag", "")
-		self.idCombo.Value = data.get("id", "")
-		self.classCombo.Value = data.get("className", "")
-		self.statesCombo.Value = translateStatesIdToLbl(data.get("states", ""))
-		self.srcCombo.Value = data.get("src", "")
-		self.relativePathText.Value = str(data.get("relativePath", ""))
-		self.indexText.Value = str(data.get("index", ""))
-	
-	def onOk(self, evt):
-		data = dict()
-		
-		setIfNotEmpty(data, "text", self.searchText.Value)
-		
-		roleLblExpr = self.roleCombo.Value
-		if roleLblExpr:
-			if not EXPR.match(roleLblExpr):
-				gui.messageBox(
-					message=(
-						_('Syntax error in the field "{field}"')
-					).format(field=stripAccelAndColon(self.FIELDS["role"])),
-					caption=_("Error"),
-					style=wx.OK | wx.ICON_ERROR,
-					parent=self
-				)
-				self.roleCombo.SetFocus()
-				return
-			roleIdExpr = translateRoleLblToId(roleLblExpr)
-			if not EXPR_INT.match(roleIdExpr):
-				gui.messageBox(
-					message=(
-						_('Unknown identifier in the field "{field}"')
-					).format(field=stripAccelAndColon(self.FIELDS["role"])),
-					caption=_("Error"),
-					style=wx.OK | wx.ICON_ERROR,
-					parent=self
-				)
-				self.roleCombo.SetFocus()
-				return
-			data["role"] = roleIdExpr
-		
-		setIfNotEmpty(data, "tag", self.tagCombo.Value.lower())
-		setIfNotEmpty(data, "id", self.idCombo.Value)
-		setIfNotEmpty(data, "className", self.classCombo.Value)
-		
-		statesLblExpr = self.statesCombo.Value
-		if statesLblExpr:
-			if not EXPR.match(statesLblExpr):
-				gui.messageBox(
-					message=(
-						_('Syntax error in the field "{field}"')
-					).format(field=stripAccelAndColon(self.FIELDS["states"])),
-					caption=_("Error"),
-					style=wx.OK | wx.ICON_ERROR,
-					parent=self
-				)
-				self.statesCombo.SetFocus()
-				return
-			statesIdExpr = translateStatesLblToId(statesLblExpr)
-			if not EXPR_INT.match(statesIdExpr):
-				gui.messageBox(
-					message=(
-						_('Unknown identifier in the field "{field}"')
-					).format(field=stripAccelAndColon(self.FIELDS["states"])),
-					caption=_("Error"),
-					style=wx.OK | wx.ICON_ERROR,
-					parent=self
-				)
-				self.statesCombo.SetFocus()
-				return
-			data["states"] = statesIdExpr
-		
-		setIfNotEmpty(data, "src", self.srcCombo.Value)
-		setIfNotEmpty(data, "relativePath", self.relativePathText.Value)
-		
-		index = self.indexText.Value
-		if index.strip():
-			try:
-				index = int(index)
-			except:
-				index = 0
-			if index > 0:
-				data["index"] = index
-			else:
-				gui.messageBox(
-					message=_("Index, if set, must be a positive integer."),
-					caption=_("Error"),
-					style=wx.OK | wx.ICON_ERROR,
-					parent=self
-				)
-				self.indexText.SetFocus()
-				return
-		
-		updateAndDeleteMissing(self.FIELDS, data, self.data)
-		
-		assert self.IsModal()
-		self.EndModal(wx.ID_OK)
-	
-	def ShowModal(self, context):
-		self.initData(context)
-		self.Fit()
-		self.Center(wx.BOTH | wx.CENTER_ON_SCREEN)
-		self.searchText.SetFocus()
-		return super(RuleCriteriaEditor, self).ShowModal()
-
-
-class RulePropertiesEditor(wx.Dialog):
-	
-	# The semi-column is part of the labels because some localizations
-	# (ie. French) require it to be prepended with one space.
-	FIELDS = OrderedDict((
-		(
-			"multiple",
-			# Translator: Field label on the RulePropertiesEditor dialog.
-			pgettext(
-				"webAccess.ruleProperties",
-				u"&Multiple results"
-			)
-		),
-		(
-			"formMode",
-			# Translator: Field label on the RulePropertiesEditor dialog.
-			pgettext("webAccess.ruleProperties", u"Activate &form mode")
-		),
-		(
-			# Translator: Field label on the RulePropertiesEditor dialog.
-			"skip",
-			pgettext("webAccess.ruleProperties", u"S&kip with Page Down")
-		),
-		(
-			# Translator: Field label on the RulePropertiesEditor dialog.
-			"sayName",
-			pgettext("webAccess.ruleProperties", u"&Speak rule name")
-		),
-		(
-			# Translator: Field label on the RulePropertiesEditor dialog.
-			"customName",
-			pgettext("webAccess.ruleProperties", u"Custom &name:")
-		),
-		("customValue", None),  # Label depends on rule type)
-		(
-			# Translator: Field label on the RulePropertiesEditor dialog.
-			"mutation",
-			pgettext("webAccess.ruleProperties", u"&Transform:")
-		),
-	))
-	
-	RULE_TYPE_FIELDS = OrderedDict((
-		(ruleTypes.PAGE_TITLE_1, ("customValue",)),
-		(ruleTypes.PAGE_TITLE_2, ("customValue",)),
-		(
-			ruleTypes.ZONE,
-			(
-				"formMode",
-				"skip",
-				"sayName",
-				"customName",
-				"customValue",
-				"mutation",
-			)
-		),
-		(
-			ruleTypes.MARKER,
-			(
-				"multiple",
-				"formMode",
-				"skip",
-				"sayName",
-				"customName",
-				"customValue",
-				"mutation",
-			)
-		),
-	))
-	
-	@classmethod
-	def getAltFieldLabel(cls, ruleType, key, default=None):
-		if key == "customValue":
-			if ruleType in (ruleTypes.PAGE_TITLE_1, ruleTypes.PAGE_TITLE_2):
-				# Translator: Field label on the RulePropertiesEditor dialog.
-				return pgettext(
-					"webAccess.ruleProperties", u"Custom page &title:"
-				)
-			elif ruleType in (ruleTypes.ZONE, ruleTypes.MARKER):
-				# Translator: Field label on the RulePropertiesEditor dialog.
-				return pgettext(
-					"webAccess.ruleProperties", u"Custom messa&ge:"
-				)
-		return default
-	
-	@classmethod
-	def getSummary(cls, data):
-		parts = []
-		ruleType = data.get("type")
-		data = data.copy()
-		data.setdefault("sayName", True)
-		for key in cls.RULE_TYPE_FIELDS.get(ruleType, {}):
-			if key in data:
-				label = cls.FIELDS[key]
-				label = cls.getAltFieldLabel(ruleType, key, label)
-				label = stripAccel(label)
-				value = data[key]
-				if key == "mutation":
-					value = mutationLabels.get(value)
-				elif isinstance(value, bool):
-					if value:
-						parts.append(label.strip().strip(":").strip())
-					continue
-				parts.append(u"{} {}".format(label, value))
-		if parts:
-			return "\n".join(parts)
-		else:
-			# Translators: Fail-back property summary in RuleEditor dialog.
-			return _("None.")
-	
-	def __init__(self, parent):
-		super(RulePropertiesEditor, self).__init__(
-			parent,
-			# Translator: The title for the RulePropertiesEditor dialog.
-			title=_("Rule Properties"),
-			style=wx.DEFAULT_DIALOG_STYLE | wx.MAXIMIZE_BOX | wx.RESIZE_BORDER,
-		)
-		
-		mainSizer = wx.BoxSizer(wx.VERTICAL)
-		
-		gbSizer = self.contextSizer = wx.GridBagSizer()
-		gbSizer.SetEmptyCellSize((0, 0))
-		mainSizer.Add(
-			gbSizer,
-			proportion=1,
-			flag=wx.EXPAND | wx.ALL | wx.ALIGN_TOP,
-			border=8
-		)
-				
-		row = 0
-		item = self.multipleCheckBox = wx.CheckBox(
-			self,
-			label=self.FIELDS["multiple"]
-		)
-		item.Hide()  # Visibility depends on rule type
-		gbSizer.Add(
-			item,
-			pos=(row, 0),
-			span=(1, 2),
-			flag=wx.EXPAND | wx.TOP | wx.BOTTOM,
-			border=4
-		)
-		
-		row += 1
-		item = self.formModeCheckBox = wx.CheckBox(
-			self,
-			label=self.FIELDS["formMode"]
-		)
-		item.Hide()  # Visibility depends on rule type
-		gbSizer.Add(
-			item,
-			pos=(row, 0),
-			span=(1, 2),
-			flag=wx.EXPAND | wx.TOP | wx.BOTTOM,
-			border=4
-		)
-		
-		row += 1
-		item = self.skipCheckBox = wx.CheckBox(
-			self,
-			label=_("S&kip with Page Down")
-		)
-		item.Hide()  # Visibility depends on rule type
-		gbSizer.Add(
-			item,
-			pos=(row, 0),
-			span=(1, 2),
-			flag=wx.EXPAND | wx.TOP | wx.BOTTOM,
-			border=4
-		)
-		
-		row += 1
-		item = self.sayNameCheckBox = wx.CheckBox(
-			self,
-			label=self.FIELDS["sayName"]
-		)
-		item.Hide()  # Visibility depends on rule type
-		gbSizer.Add(
-			item,
-			pos=(row, 0),
-			span=(1, 2),
-			flag=wx.EXPAND | wx.TOP | wx.BOTTOM,
-			border=4
-		)
-		
-		row += 1
-		item = self.customNameLabel = wx.StaticText(
-			self,
-			label=self.FIELDS["customName"] or ""
-		)
-		item.Hide()  # Visibility depends on rule type
-		gbSizer.Add(
-			item,
-			pos=(row, 0),
-			flag=wx.TOP | wx.BOTTOM | wx.RIGHT,
-			border=4
-		)
-		item = self.customNameText = wx.TextCtrl(self, size=(350, -1))
-		item.Hide()  # Visibility depends on rule type
-		gbSizer.Add(
-			item,
-			pos=(row, 1),
-			flag=wx.EXPAND | wx.TOP | wx.BOTTOM | wx.LEFT,
-			border=4
-		)
-		
-		row += 1
-		item = self.customValueLabel = wx.StaticText(
-			self,
-			label=self.FIELDS["customValue"] or ""
-		)
-		item.Hide()  # Visibility depends on rule type
-		gbSizer.Add(
-			item,
-			pos=(row, 0),
-			flag=wx.TOP | wx.BOTTOM | wx.RIGHT,
-			border=4
-		)
-		item = self.customValueText = wx.TextCtrl(self, size=(350, -1))
-		item.Hide()  # Visibility depends on rule type
-		gbSizer.Add(
-			item,
-			pos=(row, 1),
-			flag=wx.EXPAND | wx.TOP | wx.BOTTOM | wx.LEFT,
-			border=4
-		)
-		
-		row += 1
-		item = self.mutationLabel = wx.StaticText(
-			self,
-			label=self.FIELDS["mutation"]
-		)
-		item.Hide()  # Visibility depends on rule type
-		gbSizer.Add(
-			item,
-			pos=(row, 0),
-			flag=wx.TOP | wx.BOTTOM | wx.RIGHT,
-			border=4
-		)
-		item = self.mutationCombo = wx.ComboBox(self, style=wx.CB_READONLY)
-		item.Hide()  # Visibility depends on rule type
-		gbSizer.Add(
-			item,
-			pos=(row, 1),
-			flag=wx.EXPAND | wx.TOP | wx.BOTTOM | wx.LEFT,
-			border=4
-		)
-		
-		gbSizer.AddGrowableCol(1)
-
-		mainSizer.Add(
-			self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL),
-			flag=wx.EXPAND | wx.BOTTOM,
-			border=8
-		)
-		self.Bind(wx.EVT_BUTTON, self.onOk, id=wx.ID_OK)
-		self.SetSizerAndFit(mainSizer)
-	
-	def initData(self, context):
-		data = self.data = context["data"]["rule"]
-		
-		ruleType = data.get("type")
-		fields = self.RULE_TYPE_FIELDS.get(ruleType, {})
-		
-		if "multiple" in fields:
-			self.multipleCheckBox.Value = data.get("multiple", False)
-			self.multipleCheckBox.Show()
-		if "formMode" in fields:
-			self.formModeCheckBox.Value = data.get("formMode", False)
-			self.formModeCheckBox.Show()
-		if "skip" in fields:
-			self.skipCheckBox.Value = data.get("skip", False)
-			self.skipCheckBox.Show()
-		if "sayName" in fields:
-			self.sayNameCheckBox.Value = data.get("sayName", True)
-			self.sayNameCheckBox.Show()
-		if "customName" in fields:
-			self.customNameText.Value = data.get("customName", "")
-			self.customNameLabel.Show()
-			self.customNameText.Show()
-		if "customValue" in fields:
-			self.customValueText.Value = data.get("customValue", "")
-			self.customValueLabel.Label = self.getAltFieldLabel(
-				ruleType, "customValue"
-			)
-			self.customValueLabel.Show()
-			self.customValueText.Show()
-		if "mutation" in fields:
-			self.mutationCombo.Append(
-				# Translators: The label when there is no control mutation.
-				pgettext("webAccess.controlMutation", "<None>"),
-				""
-			)
-			for id_ in MUTATIONS_BY_RULE_TYPE.get(ruleType, []):
-				label = mutationLabels.get(id_)
-				if label is None:
-					log.error("No label for mutation id: {}".format(id_))
-					label = id_
-				self.mutationCombo.Append(label, id_)
-			mutation = data.get("mutation")
-			if mutation:
-				for index in range(1, self.mutationCombo.Count + 1):
-					id_ = self.mutationCombo.GetClientData(index)
-					if id_ == mutation:
-						break
-				else:
-					# Allow to bypass mutation choice by rule type
-					label = mutationLabels.get(id_)
-					if label is None:
-						log.error("No label for mutation id: {}".format(id_))
-						label = id_
-					self.mutationCombo.Append(label, id_)
-					index += 1
-			else:
-				index = 0
-			self.mutationCombo.SetSelection(index)
-			self.mutationLabel.Show()
-			self.mutationCombo.Show()
-	
-	def onOk(self, evt):
-		data = OrderedDict()
-		
-		fields = self.RULE_TYPE_FIELDS.get(self.data.get("type"), {})
-		
-		# Among these properties, only "sayName" defaults to True
-		# All others default to False or empty.
-		
-		if "multiple" in fields and self.multipleCheckBox.Value:
-			data["multiple"] = True
-		if "formMode" in fields and self.formModeCheckBox.Value:
-			data["formMode"] = True
-		if "skip" in fields and self.skipCheckBox.Value:
-			data["skip"] = True
-		if "sayName" in fields and not self.sayNameCheckBox.Value:
-			data["sayName"] = False
-		if "customName" in fields:
-			setIfNotEmpty(data, "customName", self.customNameText.Value)
-		if "customValue" in fields:
-			setIfNotEmpty(data, "customValue", self.customValueText.Value)
-		if "mutation" in fields:
-			if self.mutationCombo.Selection > 0:
-				data["mutation"] = self.mutationCombo.GetClientData(
-					self.mutationCombo.Selection
-				)
-		
-		updateAndDeleteMissing(fields, data, self.data)
-
-		assert self.IsModal()
-		self.EndModal(wx.ID_OK)
-	
-	def ShowModal(self, context):
-		self.initData(context)
-		self.Fit()
-		self.Center(wx.BOTH | wx.CENTER_ON_SCREEN)
-		for ctrl in (
-			self.multipleCheckBox,
-			self.formModeCheckBox,
-			self.customValueText
-		):
-			if ctrl.IsShown():
-				ctrl.SetFocus()
-				break
-		return super(RulePropertiesEditor, self).ShowModal()
-
-
-class RuleEditor(wx.Dialog):
-	
-	def __init__(self, parent):
-		super(RuleEditor, self).__init__(
-			parent,
-			style=wx.DEFAULT_DIALOG_STYLE | wx.MAXIMIZE_BOX | wx.RESIZE_BORDER,
-		)
-		self.hasMoved = False
-		
-		# Dialog main sizer
-		mainSizer = wx.BoxSizer(wx.VERTICAL)
-		
-		# Form part
-		columnsSizer = wx.GridBagSizer(8, 8)
-		mainSizer.Add(
-			columnsSizer,
-			proportion=1,
-			flag=wx.EXPAND | wx.ALL,
-			border=8
-		)
-		leftSizer = wx.FlexGridSizer(cols=1, vgap=8, hgap=8)
-		rightSizer = wx.GridBagSizer(8, 8)
-		columnsSizer.Add(leftSizer, pos=(0, 0), flag=wx.EXPAND)
-		columnsSizer.Add(
-			wx.StaticLine(self, style=wx.LI_VERTICAL),
-			pos=(0, 1),
-			flag=wx.EXPAND
-		)
-		columnsSizer.Add(rightSizer, pos=(0, 2), flag=wx.EXPAND)
-		columnsSizer.AddGrowableCol(0)
-		columnsSizer.AddGrowableCol(2)
-		columnsSizer.AddGrowableRow(0)
-		
-		# Header section
-		headerSizer = wx.FlexGridSizer(cols=2, vgap=8, hgap=8)
-		leftSizer.Add(headerSizer, flag=wx.EXPAND)
-
-		item = wx.StaticText(self, label=_(u"Rule &type:"))
-		headerSizer.Add(item)
-		item = self.ruleTypeCombo = wx.ComboBox(self, style=wx.CB_READONLY)
-		item.Bind(wx.EVT_COMBOBOX, self.onRuleTypeChoice)
-		for key, label in ruleTypes.ruleTypeLabels.items():
-			self.ruleTypeCombo.Append(label, key)
-		headerSizer.Add(item, flag=wx.EXPAND)
-		
-		item = wx.StaticText(self, label=_(u"Rule &name:"))
-		headerSizer.Add(item)
-		item = self.ruleNameText = wx.ComboBox(self)
-		headerSizer.Add(item, flag=wx.EXPAND)
-		
-		headerSizer.AddGrowableCol(1)
-		
-		# Context Box
-		contextBox = self.contextBox = wx.StaticBox(self, label=_("Context"))
-		contextSizer = self.contextSizer = wx.GridBagSizer(8, 8)
-		item = wx.StaticBoxSizer(contextBox, orient=wx.VERTICAL)
-		item.Add(contextSizer, flag=wx.EXPAND | wx.ALL, border=4)
-		leftSizer.Add(item, flag=wx.EXPAND)
-				
-		item = self.contextText = ExpandoTextCtrl(
-			contextBox,
-			size=(250, -1),
-			style=wx.TE_PROCESS_ENTER | wx.TE_MULTILINE | wx.TE_READONLY,
-		)
-		item.Bind(wx.EVT_TEXT_ENTER, self.onOk)
-		contextSizer.Add(item, pos=(0, 0), span=(2, 1), flag=wx.EXPAND)
-		item = wx.Button(contextBox, label=_("Edit conte&xt"))
-		item.Bind(wx.EVT_BUTTON, self.onContextBtn)
-		contextSizer.Add(item, pos=(0, 1))
-		contextSizer.AddGrowableCol(0)
-		contextSizer.AddGrowableRow(1)
-		
-		# Criteria Box
-		criteriaBox = wx.StaticBox(self, label=_("Criteria"))
-		criteriaSizer = wx.GridBagSizer(8, 8)
-		item = wx.StaticBoxSizer(criteriaBox, orient=wx.VERTICAL)
-		item.Add(criteriaSizer, flag=wx.EXPAND | wx.ALL, border=4)
-		leftSizer.Add(item, flag=wx.EXPAND)
-		item = self.criteriaText = ExpandoTextCtrl(
-			criteriaBox,
-			size=(250, -1),
-			style=wx.TE_PROCESS_ENTER | wx.TE_MULTILINE | wx.TE_READONLY,
-		)
-		item.Bind(wx.EVT_TEXT_ENTER, self.onOk)
-		criteriaSizer.Add(item, pos=(0, 0), span=(2, 1), flag=wx.EXPAND)
-		item = wx.Button(criteriaBox, label=_("Edit c&riteria"))
-		item.Bind(wx.EVT_BUTTON, self.onCriteriaBtn)
-		criteriaSizer.Add(item, pos=(0, 1))
-		criteriaSizer.AddGrowableCol(0)
-		criteriaSizer.AddGrowableRow(1)
-		
-		# Actions Box
-		actionsBox = self.actionsBox = wx.StaticBox(
-			self, label=_("Actions"), style=wx.SB_RAISED
-		)
-		actionsBox.Hide()  # Visibility depends on rule type
-		actionsSizer = wx.GridBagSizer(8, 8)
-		item = wx.StaticBoxSizer(actionsBox, orient=wx.VERTICAL)
-		item.Add(actionsSizer, flag=wx.EXPAND | wx.ALL, border=4)
-		leftSizer.Add(item, flag=wx.EXPAND)
-		
-		item = wx.StaticText(actionsBox, label=_("&Keyboard shortcut"))
-		actionsSizer.Add(item, pos=(0, 0))
-		item = self.gesturesList = wx.ListBox(actionsBox)
-		item.Bind(wx.EVT_LISTBOX, self.onGesturesListChoice)
-		actionsSizer.Add(item, pos=(0, 1), span=(3, 1), flag=wx.EXPAND)
-		
-		item = wx.Button(actionsBox, label=_("Add a keyboard shortcut"))
-		item.Bind(wx.EVT_BUTTON, self.onAddGesture)
-		actionsSizer.Add(item, pos=(0, 2), flag=wx.EXPAND)
-		
-		item = self.deleteGestureButton = wx.Button(
-			actionsBox,
-			label=_("Delete this shortcut")
-		)
-		item.Bind(wx.EVT_BUTTON, self.onDeleteGesture)
-		actionsSizer.Add(item, pos=(1, 2), flag=wx.EXPAND)
-		
-		item = wx.StaticText(
-			actionsBox,
-			label=_("&Automatic action at rule detection")
-		)
-		actionsSizer.Add(item, pos=(3, 0))
-		item = self.autoActionList = wx.ComboBox(
-			actionsBox,
-			style=wx.CB_READONLY
-		)
-		actionsSizer.Add(item, pos=(3, 1), flag=wx.EXPAND)
-		
-		actionsSizer.AddGrowableCol(1)
-		actionsSizer.AddGrowableCol(2)
-		actionsSizer.AddGrowableRow(2)
-		
-		# Properties Box
-		propertiesBox = self.propertiesBox = wx.StaticBox(
-			self,
-			label=_("Properties")
-		)
-		propertiesBox.Hide()  # Visibility depends on rule type
-		propertiesSizer = wx.GridBagSizer(8, 8)
-		item = wx.StaticBoxSizer(propertiesBox, orient=wx.VERTICAL)
-		item.Add(propertiesSizer, flag=wx.EXPAND | wx.ALL, border=4)
-		leftSizer.Add(item, flag=wx.EXPAND)
-		item = self.propertiesText = ExpandoTextCtrl(
-			propertiesBox,
-			size=(250, -1),
-			style=wx.TE_PROCESS_ENTER | wx.TE_MULTILINE | wx.TE_READONLY,
-		)
-		item.Bind(wx.EVT_TEXT_ENTER, self.onOk)
-		propertiesSizer.Add(item, pos=(0, 0), span=(2, 1), flag=wx.EXPAND)
-		item = wx.Button(propertiesBox, label=_("Edit &properties"))
-		item.Bind(wx.EVT_BUTTON, self.onPropertiesBtn)
-		propertiesSizer.Add(item, pos=(0, 1))
-		propertiesSizer.AddGrowableCol(0)
-		propertiesSizer.AddGrowableRow(1)
-		
-		leftSizer.AddGrowableCol(0)
-			
-		# Comment section
-		row = 0
-		rightSizer.Add(
-			wx.StaticText(self, label=_("&Comment")),
-			pos=(row, 0)
-		)
-		
-		row += 1
-		item = self.comment = wx.TextCtrl(
-			self,
-			size=(500, 300),
-			style=wx.TE_MULTILINE
-		)
-		rightSizer.Add(item, pos=(row, 0), flag=wx.EXPAND)
-
-		rightSizer.AddGrowableCol(0)
-		rightSizer.AddGrowableRow(1)
-				
-		mainSizer.Add(
-			self.CreateSeparatedButtonSizer(wx.OK | wx.CANCEL),
-			flag=wx.EXPAND | wx.BOTTOM,
-			border=8
-		)
-		self.Bind(wx.EVT_BUTTON, self.onOk, id=wx.ID_OK)
-		self.Bind(wx.EVT_BUTTON, self.onCancel, id=wx.ID_CANCEL)
-		self.Bind(wx.EVT_SIZE, self.onSize)
-		self.Bind(wx.EVT_MOVE_END, self.onMoveEnd)
-		self.SetSizerAndFit(mainSizer)
-	
-	def __del__(self):
-		RuleEditor._instance = None
-	
-	def initData(self, context):
-		self.context = context
-		rule = self.rule = context.get("rule")
-		self.data = context.setdefault("data", {}).setdefault(
-			"rule",
-			rule.getData() if rule else OrderedDict()
-		)
-		markerManager = self.markerManager = context["webModule"].markerManager
-		if not self.rule and markerManager.nodeManager:
-			node = markerManager.nodeManager.getCaretNode()
-			while node is not None:
-				if node.role in formModeRoles:
-					self.data["formMode"] = True
-					break
-				node = node.parent
-		
-		actionsDict = self.markerManager.getActions()
-		self.autoActionList.Clear()
-		self.autoActionList.Append(
-			# Translators: Action name
-			pgettext("webAccess.action", "No action"),
-			""
-		)
-		for action in actionsDict:
-			self.autoActionList.Append(actionsDict[action], action)
-		
-		if len(self.getQueriesNames()) == 0:
-			self.ruleNameText.Set([""])
-		else:
-			self.ruleNameText.Set(self.getQueriesNames())
-		
-		if self.rule is None:
-			self.Title = _(u"New rule")
-			self.ruleTypeCombo.SetSelection(-1)
-			self.gestureMapValue = {}
-			self.autoActionList.SetSelection(0)
-			self.comment.Value = ""
-		else:
-			self.Title = _("Edit rule")
-			self.ruleNameText.Value = rule.name
-			for index, key in enumerate(ruleTypes.ruleTypeLabels.keys()):
-				if key == rule.type:
-					break
-			else:
-				log.error(u"Unexpected rule type: {}".format(rule.type))
-				index = -1
-			self.ruleTypeCombo.SetSelection(index)
-			self.gestureMapValue = rule.gestures.copy()
-			self.autoActionList.SetSelection(
-				markerManager.getActions().keys().index(
-					rule.dic.get("autoAction", "")
-				) + 1  # Empty entry at index 0
-				if "autoAction" in rule.dic else 0
-			)
-			self.comment.Value = rule.dic.get("comment", "")
-		
-		self.onRuleTypeChoice(None)
-		self.refreshContext()
-		self.refreshCriteria()
-		self.refreshProperties()
+	def onDeleteGesture(self, evt):
+		gestureIdentifier = self.gesturesList.GetClientData(self.gesturesList.Selection)
+		del self.gestureMapValue[gestureIdentifier]
 		self.updateGesturesList()
-	
-	def getQueriesNames(self):
-		nameList = []
-		for rule in self.markerManager.getQueries():
-			if rule.name not in nameList:
-				nameList.append(rule.name)
-		return nameList
-	
-	def onRuleTypeChoice(self, evt):
-		ruleType = None
-		if self.ruleTypeCombo.Selection >= 0:
-			ruleType = self.ruleTypeCombo.GetClientData(
-				self.ruleTypeCombo.Selection
-			)
-		self.data["type"] = ruleType
-		if "rule" not in self.context:
-			if ruleType == ruleTypes.ZONE:
-				self.data["skip"] = True
-			elif ruleType == ruleTypes.MARKER:
-				self.data["skip"] = False
-		for control, types in (
-			(
-				self.actionsBox, (
-					ruleTypes.ZONE,
-					ruleTypes.MARKER,
-				),
-			),
-			(
-				self.propertiesBox,
-				(
-					ruleTypes.PAGE_TITLE_1,
-					ruleTypes.PAGE_TITLE_2,
-					ruleTypes.ZONE,
-					ruleTypes.MARKER,
-				)
-			)
-		):
-			control.Show(ruleType in types)
 		
-		self.refreshProperties()
-		
-		self.Sizer.Layout()
-		if not self.IsMaximized():
-			self.Fit()
-			if not self.hasMoved:
-				self.CenterOnScreen()
-	
-	def onContextBtn(self, evt):
-		with RuleContextEditor(self) as dlg:
-			if dlg.ShowModal(self.context) == wx.ID_OK:
-				self.refreshContext()
-	
-	def refreshContext(self):
-		self.contextText.Value = RuleContextEditor.getSummary(self.data)
-		self.Sizer.Layout()
-		if not self.IsMaximized():
-			self.Fit()
-			if not self.hasMoved:
-				self.CenterOnScreen()
-	
-	def onCriteriaBtn(self, evt):
-		with RuleCriteriaEditor(self) as dlg:
-			if dlg.ShowModal(self.context) == wx.ID_OK:
-				self.refreshCriteria()
-	
-	def refreshCriteria(self):
-		self.criteriaText.Value = RuleCriteriaEditor.getSummary(self.data)
-		self.Sizer.Layout()
-		if not self.IsMaximized():
-			self.Fit()
-			if not self.hasMoved:
-				self.CenterOnScreen()
-	
-	def onPropertiesBtn(self, evt):
-		with RulePropertiesEditor(self) as dlg:
-			if dlg.ShowModal(self.context) == wx.ID_OK:
-				self.refreshProperties()
-	
-	def refreshProperties(self):
-		self.propertiesText.Value = RulePropertiesEditor.getSummary(self.data)
-		self.Sizer.Layout()
-		if not self.IsMaximized():
-			self.Fit()
-			if not self.hasMoved:
-				self.CenterOnScreen()
-	
 	def updateGesturesList(self, newGestureIdentifier=None):
 		self.gesturesList.Clear()
 		i = 0
 		sel = 0
 		for gestureIdentifier in self.gestureMapValue:
-			gestureSource, gestureMain = \
-				inputCore.getDisplayTextForGestureIdentifier(gestureIdentifier)
-			actionStr = self.markerManager.getActions()[
-				self.gestureMapValue[gestureIdentifier]
-			]
-			self.gesturesList.Append("%s = %s" % (
-				gestureMain, actionStr), gestureIdentifier)
+			gestureSource, gestureMain = inputCore.getDisplayTextForGestureIdentifier(gestureIdentifier)
+			actionStr = self.markerManager.getActions()[self.gestureMapValue[gestureIdentifier]]
+			self.gesturesList.Append("%s = %s" % (gestureMain, actionStr), gestureIdentifier)
 			if gestureIdentifier == newGestureIdentifier:
 				sel = i
 			i += 1
 		if len(self.gestureMapValue) > 0:
 			self.gesturesList.SetSelection(sel)
-		self.onGesturesListChoice(None)
-		self.gesturesList.SetFocus()
-		self.Sizer.Layout()
-		if not self.IsMaximized():
-			self.Fit()
-			if not self.hasMoved:
-				self.CenterOnScreen()
-	
-	def onGesturesListChoice(self, evt):
-		sel = self.gesturesList.Selection
-		if sel < 0:
-			self.deleteGestureButton.Enabled = False
+		
+		if self.gesturesList.Selection < 0:
+			self.deleteButton.Enabled = False
 		else:
-			self.deleteGestureButton.Enabled = True
-	
-	def onDeleteGesture(self, evt):
-		sel = self.gesturesList.Selection
-		gestureIdentifier = self.gesturesList.GetClientData(sel)
-		del self.gestureMapValue[gestureIdentifier]
-		self.updateGesturesList()
-	
-	def onAddGesture(self, evt):
-		from ..gui import shortcutDialog
-		shortcutDialog.markerManager = self.markerManager
-		if shortcutDialog.show():
-			self.AddGestureAction(
-				shortcutDialog.resultShortcut,
-				shortcutDialog.resultActionData
-			)
-	
-	def AddGestureAction(self, gestureIdentifier, action):
-		self.gestureMapValue[gestureIdentifier] = action
-		self.updateGesturesList(newGestureIdentifier=gestureIdentifier)
+			self.deleteButton.Enabled = True
+		
 		self.gesturesList.SetFocus()
+		
+	def initData(self):
+		self.checkVisibility()
+		self.markerManager = globalContext["webModule"].markerManager
+		self.addButton.Bind(wx.EVT_BUTTON, self.onAddGesture)
+		
+		actionsDict = self.markerManager.getActions()
+		self.actionList.Clear()
+		# Translators: No action choice
+		self.actionList.Append(pgettext("webAccess.action", "No action"), "")
+		for action in actionsDict:
+			self.actionList.Append(actionsDict[action], action)
+			
+		if newRule:
+			self.gestureMapValue = {}
+			self.actionList.SetSelection(0)
+		else:
+			self.gestureMapValue = globalRule.get("gestures", {}).copy()
+			self.actionList.SetSelection(
+				self.markerManager.getActions().keys().index(
+					globalRule.get("autoAction", "")
+				) + 1  # Empty entry at index 0
+				if "autoAction" in globalRule.keys() else 0
+			)
+		self.updateGesturesList(None)
+		
+	def checkVisibility(self):
+		ruleType = globalRule.get("type")
+		if ruleType in (ruleTypes.ZONE, ruleTypes.MARKER):
+			self.noActionsTxt.Show(False)
+			self.mainGridSizer.ShowItems(True)
+		else:
+			self.noActionsTxt.Show(True)
+			self.mainGridSizer.ShowItems(False)
+		
+	def onSave(self):
+		ruleType = globalRule.get("type")
+		if ruleType in (ruleTypes.ZONE, ruleTypes.MARKER):
+			globalRule["gestures"] = self.gestureMapValue
+			autoAction = self.actionList.GetClientData(self.actionList.Selection)
+			setIfNotEmpty(globalRule, "autoAction", autoAction)
+		else:
+			if globalRule.get("gestures"):
+				del globalRule["gestures"]
+			if globalRule.get("autoAction"):
+				del globalRule["autoAction"]
+
+
+class PropertiesPanel(SettingsPanel):
+	# Translators: This is the label for the rule dialog's properties panel.
+	title = _("Properties")
 	
-	def onOk(self, evt):
-		data = self.data
-		ruleType = data.get("type")
-		if not ruleType:
+	# The semi-column is part of the labels because some localizations
+	# (ie. French) require it to be prepended with one space.
+	FIELDS = OrderedDict((
+		# Translator: Multiple results checkbox label for the rule dialog's properties panel.
+		("multiple", pgettext("webAccess.ruleProperties", u"&Multiple results")),
+		# Translator: Activate form mode checkbox label for the rule dialog's properties panel.
+		("formMode", pgettext("webAccess.ruleProperties", u"Activate &form mode")),
+		# Translator: Skip page down checkbox label for the rule dialog's properties panel.
+		("skip", pgettext("webAccess.ruleProperties", u"S&kip with Page Down")),
+		# Translator: Speak rule name checkbox label for the rule dialog's properties panel.
+		("sayName", pgettext("webAccess.ruleProperties", u"&Speak rule name")),
+		# Translator: Custom name input label for the rule dialog's properties panel.
+		("customName", pgettext("webAccess.ruleProperties", u"Custom &name:")),
+		# Label depends on rule type)
+		("customValue", None),
+		# Translator: Transform select label for the rule dialog's properties panel.
+		("mutation", pgettext("webAccess.ruleProperties", u"&Transform:")),
+	))
+	
+	RULE_TYPE_FIELDS = OrderedDict((
+		(ruleTypes.PAGE_TITLE_1, ("customValue",)),
+		(ruleTypes.PAGE_TITLE_2, ("customValue",)),
+		(ruleTypes.ZONE, ("formMode", "skip", "sayName", "customName", "customValue", "mutation")),
+		(ruleTypes.MARKER, ("multiple", "formMode", "skip", "sayName", "customName", "customValue", "mutation")),
+	))
+	
+	def strToBool(self, str):
+		if str == "True":
+			return True
+		if str == "False":
+			return False
+		raise ValueError("Cannot covert {} to a bool".format(str))
+	
+	@classmethod
+	def getAltFieldLabel(cls, ruleType):
+		if ruleType in (ruleTypes.PAGE_TITLE_1, ruleTypes.PAGE_TITLE_2):
+			# Translator: Custom page title input label for the rule dialog's properties panel.
+			return pgettext("webAccess.ruleProperties", u"Custom page &title:")
+		elif ruleType in (ruleTypes.ZONE, ruleTypes.MARKER):
+			# Translator: Custom message input label for the rule dialog's properties panel.
+			return pgettext("webAccess.ruleProperties", u"Custom messa&ge:")
+		return ""
+	
+	def makeSettings(self, settingsSizer):
+		marginSizer = wx.BoxSizer(wx.HORIZONTAL)
+		mainSizer = wx.BoxSizer(wx.VERTICAL)
+		marginSizer.AddSpacer(10)
+		marginSizer.Add(mainSizer)
+		settingsSizer.Add(marginSizer, flag=wx.EXPAND, proportion=1)
+		
+		self.mainGridSizer = wx.GridBagSizer(vgap=5, hgap=10)
+		mainSizer.Add(self.mainGridSizer)
+		
+		self.multipleProperty = wx.CheckBox(self, label=self.FIELDS["multiple"])
+		self.formModeProperty = wx.CheckBox(self, label=self.FIELDS["formMode"])
+		self.skipProperty = wx.CheckBox(self, label=self.FIELDS["skip"])
+		self.sayNameProperty = wx.CheckBox(self, label=self.FIELDS["sayName"])
+		self.customNameLabel = wx.StaticText(self, label=self.FIELDS["customName"])
+		self.customNameProperty = wx.TextCtrl(self, size=(350, -1))
+		self.customValueLabel = wx.StaticText(self, label=self.FIELDS["customValue"] or "")
+		self.customValueProperty = wx.TextCtrl(self, size=(350, -1))
+		self.mutationLabel = wx.StaticText(self, label=self.FIELDS["mutation"])
+		self.mutationProperty = wx.ComboBox(self, style=wx.CB_READONLY)
+		# Translator: Text showed when the selected type doesn't have properties available
+		self.noPropertiesText = wx.StaticText(self, label=_("No properties available for the selected rule type"))
+		
+		self.initData()
+		
+	def checkVisibility(self):
+		ruleType = globalRule.get("type", "")
+		fields = self.RULE_TYPE_FIELDS.get(ruleType, {})
+		self.multipleProperty.Show("multiple" in fields)
+		self.formModeProperty.Show("formMode" in fields)
+		self.skipProperty.Show("skip" in fields)
+		self.sayNameProperty.Show("sayName" in fields)
+		self.customNameLabel.Show("customName" in fields)
+		self.customNameProperty.Show("customName" in fields)
+		self.customValueLabel.Show("customValue" in fields)
+		self.customValueProperty.Show("customValue" in fields)
+		self.mutationLabel.Show("mutation" in fields)
+		self.mutationProperty.Show("mutation" in fields)
+		self.noPropertiesText.Show(not bool(fields))
+			
+		if "mutation" in fields:
+			# Translators: The label when there is no control mutation.
+			self.mutationProperty.Append(pgettext("webAccess.controlMutation", "<None>"), "")
+			for id_ in MUTATIONS_BY_RULE_TYPE.get(ruleType, []):
+				label = mutationLabels.get(id_)
+				if label is None:
+					log.error("No label for mutation id: {}".format(id_))
+					label = id_
+				self.mutationProperty.Append(label, id_)
+			
+		self.mainGridSizer.Clear()
+		if not bool(fields):
+			self.mainGridSizer.Add(self.noPropertiesText, (0,0))
+			return
+		self.customValueLabel.Label = self.getAltFieldLabel(ruleType)
+		if ruleType == ruleTypes.PAGE_TITLE_1 or ruleType == ruleTypes.PAGE_TITLE_2:
+			self.mainGridSizer.AddMany([
+				(self.customValueLabel, (0,0), (1,2)),
+				(self.customValueProperty, (1,0), (1,2))
+				])
+			return
+		if ruleType == ruleTypes.ZONE:	
+			self.mainGridSizer.AddMany([
+				(self.formModeProperty, (0,0)), 
+				(self.skipProperty, (0,1)),
+				(self.sayNameProperty, (1,0)),
+				(10, 8, (2,0), (1,2)),
+				(self.customNameLabel, (3,0), (1,2)),
+				(self.customNameProperty, (4,0), (1,2), wx.EXPAND),
+				(10, 8, (5,0), (1,2)),
+				(self.customValueLabel, (6,0), (1,2)),
+				(self.customValueProperty, (7,0), (1,2), wx.EXPAND),
+				(10, 8, (8,0), (1,2)),
+				(self.mutationLabel, (9,0), (1,2)),
+				(self.mutationProperty, (10,0), (1,2), wx.EXPAND),
+				])
+			return
+		if ruleType == ruleTypes.MARKER:
+			self.mainGridSizer.AddMany([
+				(self.multipleProperty, (0,0)),
+				(self.formModeProperty, (0,1)), 
+				(self.skipProperty, (1,0)),
+				(self.sayNameProperty, (1,1)),
+				(10, 8, (2,0), (1,2)),
+				(self.customNameLabel, (3,0), (1,2)),
+				(self.customNameProperty, (4,0), (1,2), wx.EXPAND),
+				(10, 8, (5,0), (1,2)),
+				(self.customValueLabel, (6,0), (1,2)),
+				(self.customValueProperty, (7,0), (1,2), wx.EXPAND),
+				(10, 8, (8,0), (1,2)),
+				(self.mutationLabel, (9,0), (1,2)),
+				(self.mutationProperty, (10,0), (1,2), wx.EXPAND),
+				])
+			return
+			
+	
+	def initData(self):
+		self.checkVisibility()
+		ruleType = globalRule.get("type", "")
+		self.multipleProperty.Value = self.strToBool(globalRule["multiple"]) if globalRule.get("multiple") else False
+		self.formModeProperty.Value = self.strToBool(globalRule["formMode"]) if globalRule.get("formMode") else False
+		self.skipProperty.Value = self.strToBool(globalRule["skip"]) if globalRule.get("skip") else False
+		self.sayNameProperty.Value = self.strToBool(globalRule["sayName"]) if globalRule.get("sayName") else True
+		self.customNameProperty.Value = globalRule.get("customName", "")
+		self.customValueLabel.Label = self.getAltFieldLabel(ruleType)
+		self.customValueProperty.Value = globalRule.get("customValue", "")
+		
+		if globalRule.get("mutation"):
+			for index in range(1, self.mutationProperty.Count + 1):
+				id_ = self.mutationProperty.GetClientData(index)
+				if id_ == globalRule["mutation"]:
+					break
+			else:
+				# Allow to bypass mutation choice by rule type
+				label = mutationLabels.get(id_)
+				if label is None:
+					log.error("No label for mutation id: {}".format(id_))
+					label = id_
+				self.mutationProperty.Append(label, id_)
+				index += 1
+		else:
+			index = 0
+		self.mutationProperty.SetSelection(index)
+		
+	def onSave(self):
+		setIfNotEmpty(globalRule, "multiple", str(self.multipleProperty.Value))
+		setIfNotEmpty(globalRule, "formMode", str(self.formModeProperty.Value))
+		setIfNotEmpty(globalRule, "skip", str(self.skipProperty.Value))
+		setIfNotEmpty(globalRule, "sayName", str(self.sayNameProperty.Value))
+		setIfNotEmpty(globalRule, "customName", self.customNameProperty.Value)
+		setIfNotEmpty(globalRule, "customValue", self.customValueProperty.Value)
+		if self.mutationProperty.Selection > 0:
+			globalRule["mutation"] = self.mutationProperty.GetClientData(self.mutationProperty.Selection)
+		
+		ruleType = globalRule.get("type", "")
+		showedFields = self.RULE_TYPE_FIELDS.get(ruleType, {})
+		for field in self.FIELDS.keys():
+			if field not in showedFields and globalRule.get(field):
+				del globalRule[field]
+
+
+class CriteriaPanel(SettingsPanel):
+	# Translators: This is the label for the criteria sets settings panel.
+	title = _("Criteria sets")
+
+	def makeSettings(self, settingsSizer):
+		marginSizer = wx.BoxSizer(wx.HORIZONTAL)
+		mainSizer = wx.BoxSizer(wx.VERTICAL)
+		marginSizer.AddSpacer(10)
+		marginSizer.Add(mainSizer)
+		settingsSizer.Add(marginSizer, flag=wx.EXPAND, proportion=1)
+
+		mainGridSizer = wx.FlexGridSizer(rows=4, cols=2, hgap=10, vgap=5)
+		mainSizer.Add(mainGridSizer)
+
+		# Translators: Label for the box containing the criterias by sequence order in the criteria panel
+		criteriaSetsLabel = wx.StaticText(self, label=_("&Criteria sets by sequence order"))
+		self.criteriaSetsList = wx.ListBox(self)
+		self.criteriaSetsList.Bind(wx.EVT_LISTBOX, self.onCriteriaChange)
+
+		# Translators: Label for the criteria's summary readonly input
+		criteriaSummaryLabel = wx.StaticText(self, label=_("Criteria &summary"))
+		self.criteriaSummary = wx.TextCtrl(self, size=(220, 100), style=wx.TE_MULTILINE | wx.TE_READONLY | wx.TE_RICH2)
+
+		# Translators: New criteria button label
+		self.newButton = wx.Button(self, label=_("&New"))
+		# Translators: Edit criteria button label
+		self.editButton = wx.Button(self, label=_("&Edit"))
+		# Translators: Delete criteria button label
+		self.deleteButton = wx.Button(self, label=_("&Delete"))
+
+		buttonSizer = wx.BoxSizer(wx.HORIZONTAL)
+		buttonSizer.AddMany((
+			self.newButton,
+			(5,5),
+			self.editButton,
+			(5,5),
+			self.deleteButton
+		))
+
+		mainGridSizer.Add(criteriaSetsLabel)
+		mainGridSizer.Add(criteriaSummaryLabel)
+		mainGridSizer.Add(self.criteriaSetsList, flag=wx.EXPAND)
+		mainGridSizer.Add(self.criteriaSummary, flag=wx.EXPAND)
+		mainGridSizer.AddSpacer(5)
+		mainGridSizer.AddSpacer(5)
+		mainGridSizer.Add(buttonSizer)
+
+		self.initData()
+
+	def initData(self):
+		self.criterias = []
+		self.newButton.Bind(wx.EVT_BUTTON, self.onNewCriteriaBtn)
+		self.editButton.Bind(wx.EVT_BUTTON, self.onEditCriteriaBtn)
+		self.deleteButton.Bind(wx.EVT_BUTTON, self.onDeleteCriteriaBtn)
+
+		if newRule or not globalRule.get("criterias"):
+			self.criteriaSetsList.Clear()
+			self.criteriaSummary.Value = ""
+			self.editButton.Disable()
+			self.deleteButton.Disable()
+
+		else:
+			self.criterias = globalRule["criterias"]
+			for criteria in self.criterias:
+				self.criteriaSetsList.Append(self.getCriteriaName(criteria))
+			self.criteriaSetsList.SetSelection(0)
+			self.criteriaSummary.Value = ""
+			self.getCriteriaSummary(self.criterias[0])
+			
+	# todo: complete criteria's  summary
+	def getCriteriaSummary(self, criteria):
+		from ..gui import criteriaSetEditor
+		self.criteriaSummary.SetDefaultStyle(wx.TextAttr(wx.Colour(55,71,79)))
+		self.criteriaSummary.AppendText("General\n")
+		self.criteriaSummary.SetDefaultStyle(wx.TextAttr(wx.BLACK))
+		self.criteriaSummary.AppendText("Name ")
+		self.criteriaSummary.AppendText(criteria.get("name", "none"))
+		
+		self.criteriaSummary.SetDefaultStyle(wx.TextAttr(wx.Colour(55,71,79)))
+		self.criteriaSummary.AppendText("\nContext\n")
+		self.criteriaSummary.SetDefaultStyle(wx.TextAttr(wx.BLACK))
+		self.criteriaSummary.AppendText(criteriaSetEditor.ContextPanel.getSummary(criteria))
+		
+		self.criteriaSummary.SetDefaultStyle(wx.TextAttr(wx.Colour(55,71,79)))
+		self.criteriaSummary.AppendText("\nCriterias\n")
+		self.criteriaSummary.SetDefaultStyle(wx.TextAttr(wx.BLACK))
+		self.criteriaSummary.AppendText(criteriaSetEditor.CriteriaPanel.getSummary(criteria))
+				
+	def getCriteriaName(self, criteria):
+		if criteria.get("name"):
+			return criteria["name"]
+		else:
+			existingCriterias = []
+			if criteria.get("contextPageTitle"):
+				existingCriterias.append(criteria["contextPageTitle"])
+			if criteria.get("contextPageType"):
+				existingCriterias.append(criteria["contextPageType"])
+			if criteria.get("contextParent"):
+				existingCriterias.append(criteria["contextParent"])
+			return " / ".join(existingCriterias)
+
+	def onNewCriteriaBtn(self, evt):
+		from ..gui import criteriaSetEditor
+		gui.mainFrame.prePopup()
+		with criteriaSetEditor.CriteriaSetEditorDialog(gui.mainFrame, self.criterias) as dlg:
+			if dlg.ShowModal() == wx.ID_OK:
+				self.criterias.insert(dlg.sequenceOrder, dlg.criteria)
+				self.refreshCriterias(dlg.sequenceOrder)
+		gui.mainFrame.postPopup()
+
+	def onEditCriteriaBtn(self, evt):
+		from ..gui import criteriaSetEditor
+		gui.mainFrame.prePopup()
+		selectedCriteria = self.criterias[self.criteriaSetsList.Selection]
+		with criteriaSetEditor.CriteriaSetEditorDialog(gui.mainFrame, self.criterias, self.criteriaSetsList.Selection) as dlg:
+			if dlg.ShowModal() == wx.ID_OK:
+				if dlg.sequenceOrder != self.criteriaSetsList.Selection:
+					self.criterias.remove(selectedCriteria)
+					self.criterias.insert(dlg.sequenceOrder, dlg.criteria)
+				else:
+					selectedCriteria = dlg.criteria
+				self.refreshCriterias(dlg.sequenceOrder)
+		gui.mainFrame.postPopup()
+		
+	def onDeleteCriteriaBtn(self, evt):
+		# Translators: Confirmation message when deleting a criteria
+		with wx.GenericMessageDialog(self, _("Are you sure you want to delete this criteria ?")) as dlg:
+			if dlg.ShowModal() == wx.ID_OK:
+				selectedCriteria = self.criterias[self.criteriaSetsList.Selection]
+				self.criterias.remove(selectedCriteria)
+				self.refreshCriterias()
+	
+	def onCriteriaChange(self, evt):
+		if not self.editButton.Enabled:
+			self.editButton.Enable(enable=True)
+			self.deleteButton.Enable(enable=True)
+		selectedCriteria = self.criterias[self.criteriaSetsList.Selection]
+		self.criteriaSummary.Value = ""
+		self.getCriteriaSummary(selectedCriteria)
+	
+	def refreshCriterias(self, sequenceOrder=0):
+		self.criteriaSetsList.Clear()
+		for criteria in self.criterias:
+				self.criteriaSetsList.Append(self.getCriteriaName(criteria))
+		self.criteriaSetsList.Selection = sequenceOrder
+		self.onCriteriaChange(None)	
+	
+	def onSave(self):
+		if self.criterias:
+			globalRule["criterias"] = self.criterias
+		elif globalRule.get("criterias"):
+			 del globalRule["criterias"]
+
+
+class GeneralPanel(SettingsPanel):
+	# Translators: This is the label for the general settings panel.
+	title = _("General")
+
+	def makeSettings(self, settingsSizer):
+		marginSizer = wx.BoxSizer(wx.HORIZONTAL)
+		mainSizer = wx.BoxSizer(wx.VERTICAL)
+		marginSizer.AddSpacer(10)
+		marginSizer.Add(mainSizer)
+		settingsSizer.Add(marginSizer, flag=wx.EXPAND, proportion=1)
+
+		gridBagSizer = wx.GridBagSizer(vgap=5, hgap=10)
+		gridBagSizer.AddGrowableRow(0)
+		gridBagSizer.AddGrowableRow(1)
+		mainSizer.Add(gridBagSizer, flag=wx.EXPAND, proportion=1)
+
+		typeChoices = []
+		for key, label in ruleTypes.ruleTypeLabels.items():
+			typeChoices.append(label)
+		# Translators: Label of the rule type choice list.
+		ruleTypeLabel = wx.StaticText(self, label=_("Rule &type"))
+		self.ruleType = wx.Choice(self, choices=typeChoices)
+		self.ruleType.Bind(wx.EVT_CHOICE, self.onTypeChange)
+		# todo: change tooltip's text
+		# Translators: Tooltip for rule type choice list.
+		self.ruleType.SetToolTip(_("TOOLTIP EXEMPLE"))
+		
+		# Translators: Label of the rule name input.
+		ruleNameLabel = wx.StaticText(self, label=_("Rule &name"))
+		self.ruleName = wx.TextCtrl(self)
+
+		# Translators: Label of the rule documentation input.
+		userDocLabel = wx.StaticText(self, label=_("User &documentation"))
+		self.ruleDocumentation = wx.TextCtrl(self, size=(400, 100), style=wx.TE_MULTILINE)
+
+		# Translators: Label of the rule summary.
+		summaryLabel = wx.StaticText(self, label=_("&Summary"))
+		self.ruleSummary = wx.TextCtrl(self, size=(400, 100), style=wx.TE_MULTILINE | wx.TE_READONLY)
+
+		gridBagSizer.Add(ruleTypeLabel, pos=(0,0), flag=wx.ALIGN_CENTER_VERTICAL)
+		gridBagSizer.Add(self.ruleType, pos=(0,1), flag=wx.EXPAND)
+		gridBagSizer.Add(5, 5, pos=(1,0), span=(1,2))
+		gridBagSizer.Add(ruleNameLabel, pos=(2,0), flag=wx.ALIGN_CENTER_VERTICAL)
+		gridBagSizer.Add(self.ruleName, pos=(2,1), flag=wx.EXPAND)
+		gridBagSizer.Add(5, 5, pos=(3,0), span=(1,2))
+		gridBagSizer.Add(userDocLabel, pos=(4,0), span=(1,2))
+		gridBagSizer.Add(self.ruleDocumentation, pos=(5,0), span=(1,2), flag=wx.EXPAND)
+
+		staticLine = wx.StaticLine(self)
+		gridBagSizer.Add(5, 5, pos=(6,0), span=(1,2))
+		gridBagSizer.Add(staticLine, pos=(7,0), span=(1,2), flag=wx.EXPAND)
+		gridBagSizer.Add(5, 5, pos=(8,0), span=(1,2))
+		gridBagSizer.Add(summaryLabel, pos=(9,0))
+		gridBagSizer.Add(self.ruleSummary, pos=(10,0), span=(1,2), flag=wx.EXPAND)
+
+		self.initData()
+
+	def initData(self):
+		self.isValidData = True
+
+		if newRule:
+			self.ruleType.SetSelection(-1)
+			self.ruleSummary.Value = ""
+		else:
+			for index, key in enumerate(ruleTypes.ruleTypeLabels.keys()):
+				if key == globalRule["type"]:
+					self.ruleType.SetSelection(index)
+					break
+			# todo: Init summary value
+			
+		self.ruleDocumentation.Value = globalRule.get("comment", "")
+		self.ruleName.Value = globalRule.get("name", "")
+		
+	# Rule's type needs to be saved when changed as numerous fields depends on which type is selected
+	def onTypeChange(self, evt):
+		globalRule["type"] = ruleTypes.ruleTypeLabels.keys()[self.ruleType.Selection]
+
+	def isValid(self):
+		return self.isValidData
+	
+	def onSave(self):
+		self.isValidData = True
+
+		# Type is required
+		if not self.ruleType.Selection >= 0:
 			gui.messageBox(
+				# Translators: Error message when no type is chosen before saving the rule
 				message=_("You must choose a type for this rule"),
 				caption=_("Error"),
 				style=wx.OK | wx.ICON_ERROR,
 				parent=self
 			)
-			self.ruleTypeCombo.SetFocus()
+			self.isValidData = False
+			self.ruleType.SetFocus()
 			return
-		name = self.ruleNameText.Value.strip()
-		if not name:
+		else:
+			globalRule["type"] = ruleTypes.ruleTypeLabels.keys()[self.ruleType.Selection]
+
+		# Name is required
+		if not self.ruleName.Value.strip():
 			gui.messageBox(
-				message=_("You must enter a name for this rule"),
+				# Translators: Error message when no name is entered before saving the rule
+				message=_("You must choose a name for this rule"),
 				caption=_("Error"),
 				style=wx.OK | wx.ICON_ERROR,
 				parent=self
 			)
-			self.ruleNameText.SetFocus()
+			self.isValidData = False
+			self.ruleName.SetFocus()
 			return
-		data["name"] = name
-
-		if ruleType in (ruleTypes.ZONE, ruleTypes.MARKER):
-			data["gestures"] = self.gestureMapValue
-			sel = self.autoActionList.Selection
-			autoAction = self.autoActionList.GetClientData(sel)
-			updateOrDeleteIfEmpty(data, "autoAction", autoAction)
 		else:
-			safeDelete(data, "gestures")
-			safeDelete(data, "autoAction")
-		
-		propertyFieldsForType = RulePropertiesEditor.RULE_TYPE_FIELDS.get(
-			ruleType, {}
-		)
-		for key in RulePropertiesEditor.FIELDS:
-			if key not in propertyFieldsForType:
-				safeDelete(data, key)
-		
-		updateOrDeleteIfEmpty(data, "comment", self.comment.Value)
-		
-		synonyms = 0
-		for rule in self.markerManager.getQueries():
-			if name == rule.name and rule != self.rule:
-				synonyms += 1
-				if synonyms >= 2:
-					break
-		if synonyms and "priority" not in data:
-			if synonyms == 1:
-				msg=_(
-					"There is another rule with the same name."
-					"\n\n"
-					"You probably should consider setting a priority."
-				)
-			else:
-				msg=_(
-					"There are other rules with the same name."
-					"\n\n"
-					"You probably should consider setting a priority."
-				)
-			if gui.messageBox(
-				message=msg,
-				caption=_("Warning"),
-				style=wx.ICON_WARNING | wx.OK | wx.CANCEL,
-				parent=self
-			) == wx.CANCEL:
-				return
-		
-		if self.rule is not None:
-			# modification mode, remove old rule
-			self.markerManager.removeQuery(self.rule)
-		rule = ruleHandler.VirtualMarkerQuery(self.markerManager, data)
-		self.markerManager.addQuery(rule)
-		webModuleHandler.update(
-			webModule=self.context["webModule"],
-			focus=self.context["focusObject"]
-		)
-		assert self.IsModal()
-		self.EndModal(wx.ID_OK)
-	
-	def onCancel(self, evt):
-		safeDelete(self.context, "rule")
-		self.EndModal(wx.ID_CANCEL)
-	
-	def onSize(self, evt):
-		if not self.IsMaximized():
-			self.Fit()
-			if not self.hasMoved:
-				self.CenterOnScreen()
-		evt.Skip()
-	
-	def onMoveEnd(self, evt):
-		self.hasMoved = True
-	
-	def ShowModal(self, context):
+			globalRule["name"] = self.ruleName.Value
+			
+		setIfNotEmpty(globalRule, "comment", self.ruleDocumentation.Value)
+
+
+class RuleEditorDialog(MultiCategorySettingsDialog):
+
+	# Translators: This is the label for the WebAccess rule settings dialog.
+	title = _("WebAccess Rule editor")
+	categoryClasses = [GeneralPanel, CriteriaPanel, ActionsPanel, PropertiesPanel]
+	INITIAL_SIZE = (750, 520)
+
+	def __init__(self, parent, initialCategory=None, context=None, new=False):
+		global newRule
+		newRule = new	
 		self.initData(context)
-		self.Fit()
-		self.Center(wx.BOTH | wx.CENTER_ON_SCREEN)
-		self.ruleTypeCombo.SetFocus()
-		return super(RuleEditor, self).ShowModal()
+		super(RuleEditorDialog, self).__init__(parent, initialCategory=initialCategory)
+
+	def initData(self, context):
+		global globalRule, globalContext
+		self.context = globalContext = context
+		self.rule = context.get("rule")
+		self.markerManager = context["webModule"].markerManager
+
+		if context.get("rule"):
+			globalRule = context.get("rule").getData().copy()
+		else:
+			globalRule = OrderedDict()
+
+		if not self.rule and self.markerManager.nodeManager:
+			node = self.markerManager.nodeManager.getCaretNode()
+			while node is not None:
+				if node.role in formModeRoles:
+					globalRule["formMode"] = True
+					break
+				node = node.parent
+
+	def _doSave(self):
+		for panel in self.catIdToInstanceMap.values():
+			panel.onSave()
+			if panel.isValid() is False:
+				raise ValueError("Validation for %s blocked saving settings" % panel.__class__.__name__)
+			
+	def onCategoryChange(self, evt):
+		currentCat = self.currentCategory
+		newIndex = evt.GetIndex()
+		if not currentCat or newIndex != self.categoryClasses.index(currentCat.__class__):
+			panelClassName = type(self.catIdToInstanceMap.get(newIndex)).__name__
+			if  panelClassName in ("ActionsPanel", "PropertiesPanel"):
+				self.catIdToInstanceMap.get(newIndex).checkVisibility()
+			self._doCategoryChange(newIndex)
+		else:
+			evt.Skip()
+
+	def onOk(self, evt):
+		try:
+			self._doSave()
+		except ValueError:
+			log.debugWarning("", exc_info=True)
+			return
+
+		if newRule:
+			for rule in self.markerManager.getQueries():
+				if globalRule["name"] == rule.name:
+					gui.messageBox(
+						# Translators: Error message when another rule with the same name already exists
+						message=_("There already is another rule with the same name."),
+						caption=_("Error"),
+						style=wx.ICON_ERROR | wx.OK | wx.CANCEL,
+						parent=self
+					)
+					return
+
+		else:
+			self.markerManager.removeQuery(self.rule)
+		savedRule = ruleHandler.VirtualMarkerQuery(self.markerManager, globalRule)
+		self.markerManager.addQuery(savedRule)
+		webModuleHandler.update(webModule=self.context["webModule"], focus=self.context["focusObject"])
+
+		for panel in self.catIdToInstanceMap.values():
+			panel.Destroy()
+		super(MultiCategorySettingsDialog, self).onOk(evt)
+
+	def Destroy(self):
+		super(RuleEditorDialog, self).Destroy()
