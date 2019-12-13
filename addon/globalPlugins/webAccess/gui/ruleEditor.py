@@ -1,15 +1,41 @@
+# globalPlugins/webAccess/gui/ruleEditor.py
 # -*- coding: utf-8 -*-
 
+# This file is part of Web Access for NVDA.
+# Copyright (C) 2015-2019 Accessolutions (http://accessolutions.fr)
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+#
+# See the file COPYING.txt at the root of this distribution for more details.
+
+# Get ready for Python 3
+from __future__ import absolute_import, division, print_function
+
+__version__ = "2019.12.12"
+__author__ = u"Shirley Noël <shirley.noel@pole-emploi.fr>"
+
+
+from collections import OrderedDict
 import wx
 
+import controlTypes
 import gui
 import inputCore
-from collections import OrderedDict
 from logHandler import log
 
 from .. import ruleHandler
 from ..ruleHandler import ruleTypes
-import controlTypes
 from .. import webModuleHandler
 
 from ..ruleHandler.controlMutation import (
@@ -209,7 +235,7 @@ class PropertiesPanel(SettingsPanel):
 			return True
 		if str == "False":
 			return False
-		raise ValueError("Cannot covert {} to a bool".format(str))
+		raise ValueError("Cannot convert {} to a bool".format(repr(str)))
 	
 	@classmethod
 	def getAltFieldLabel(cls, ruleType):
@@ -591,7 +617,7 @@ class GeneralPanel(SettingsPanel):
 		
 	# Rule's type needs to be saved when changed as numerous fields depends on which type is selected
 	def onTypeChange(self, evt):
-		globalRule["type"] = ruleTypes.ruleTypeLabels.keys()[self.ruleType.Selection]
+		globalRule["type"] = tuple(ruleTypes.ruleTypeLabels.keys())[self.ruleType.Selection]
 
 	def isValid(self):
 		return self.isValidData
@@ -612,7 +638,7 @@ class GeneralPanel(SettingsPanel):
 			self.ruleType.SetFocus()
 			return
 		else:
-			globalRule["type"] = ruleTypes.ruleTypeLabels.keys()[self.ruleType.Selection]
+			globalRule["type"] = tuple(ruleTypes.ruleTypeLabels.keys())[self.ruleType.Selection]
 
 		# Name is required
 		if not self.ruleName.Value.strip():
